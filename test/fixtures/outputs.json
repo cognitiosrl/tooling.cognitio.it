@@ -1,0 +1,6 @@
+{
+  "admin_access_aud": {"sensitive": false, "type": "string", "value": "aud-made-up-0001"},
+  "csrf_key": {"sensitive": true, "type": "string", "value": "csrf-made-up-key"},
+  "d1_database_id": {"sensitive": false, "type": "string", "value": "d1-made-up-id"},
+  "verifier_key": {"sensitive": true, "type": "string", "value": "verifier-made-up-key"}
+}
