@@ -7,8 +7,8 @@
 #   COGNITIO_TOOLING_DEPLOY_KEY    Check out cognitio-tooling
 #   VERIFIER_KEY, CSRF_KEY         Write the secrets files (OpenTofu's masked step outputs)
 #   D1_DATABASE_ID, ACCESS_AUD     Fill the Wrangler configuration (OpenTofu's step outputs)
-# A push applies no infrastructure change: a change to a gate is read in a plan_only run, then
-# dispatched with infra_change_confirmed (and delete_confirmed for a delete or a replace).
+# A push applies no infrastructure change (scripts/tofu.sh apply refuses any change without
+# --confirmed): a change to a gate is read in a plan_only run, then dispatched with infra_change_confirmed (and delete_confirmed for a delete or a replace).
 
 name: deploy
 
@@ -49,6 +49,10 @@ jobs:
           submodules: false
           persist-credentials: false
 
+      # The pin-reading steps (this one, the two checkouts and the pin check) are written out in
+      # both deploy.yml and plan.yml on purpose: a workflow cannot share steps without a further
+      # file. test/workflows.test.mjs holds the two copies textually identical, so a pull request's
+      # plan checks the repositories and commits the deploy ships.
       - name: Read the pins
         id: pins
         run: |
@@ -89,8 +93,10 @@ jobs:
         id: checked
         run: |
           set -euo pipefail
-          scripts/check-pins.sh
-          tag=$(git -C cognitio-tooling tag --points-at HEAD | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | head -n 1)
+          pins=$(scripts/check-pins.sh)
+          printf '%s\n' "$pins"
+          tag=$(awk '$1 == "cognitio-tooling" { print $2 }' <<<"$pins")
+          if [ -z "$tag" ]; then echo "check-pins.sh printed no cognitio-tooling tag" >&2; exit 1; fi
           printf 'tag=%s\n' "$tag" >> "$GITHUB_OUTPUT"
 
       - name: Set up Node
@@ -254,13 +260,13 @@ jobs:
         run: |
           set -euo pipefail
           verify() {
-            npx wrangler deployments status --json --name "$1" > "$RUNNER_TEMP/deployment-$2.json"
+            npx wrangler deployments status --json --config "$1" > "$RUNNER_TEMP/deployment-$2.json"
             node scripts/verify-deploy.mjs --wrangler-output "$RUNNER_TEMP/wrangler-$2.ndjson" --deployment "$RUNNER_TEMP/deployment-$2.json"
           }
-          verify cognitio-tooling-admin admin
-          verify cognitio-tooling serve
-          verify tandem-tooling-registry registry
-          verify tandem-tooling-files files
+          verify workers/admin.filled.jsonc admin
+          verify workers/serve.filled.jsonc serve
+          verify workers/registry.wrangler.jsonc registry
+          verify files/wrangler.jsonc files
 
       - name: Smoke test the public hosts
         if: ${{ inputs.plan_only != true }}
@@ -270,7 +276,7 @@ jobs:
             https://tooling.aggrega.ai/v2/ \
             https://tooling.aggrega.ai/tandemsdd/marketplace.json \
             https://tooling.cognitio.it/l10n/index.json; do
-            status=$(curl --silent --output /dev/null --max-time 30 --write-out '%{http_code}' "$url")
+            status=$(curl --silent --show-error --output /dev/null --max-time 30 --write-out '%{http_code}' "$url")
             if [ "$status" != 401 ]; then
               echo "$url answered $status; a request without credentials must be refused with 401" >&2
               exit 1

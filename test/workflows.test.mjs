@@ -3,7 +3,7 @@
 // `      - name:`; comments are dropped before any search, so a header may name a secret freely.
 
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { readFileSync, readdirSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
@@ -30,7 +30,7 @@ function load(file) {
 const deploy = load("deploy.yml");
 const plan = load("plan.yml");
 const both = [deploy, plan];
-const code = (step) => step.text.split("\n").filter((l) => !l.trim().startsWith("#")).join("\n");
+const code = (step) => step.text;
 const stepsMentioning = (workflow, pattern) => workflow.steps.filter((step) => pattern.test(code(step))).map((s) => s.name);
 const named = (workflow, name) => {
   const found = workflow.steps.filter((step) => step.name === name);
@@ -210,6 +210,7 @@ test("a run without secrets skips the steps that need them", () => {
   assert.ok(flag, "plan.yml states the condition once, in the job's env");
   assert.ok(flag[1].includes("github.event.pull_request.head.repo.full_name != github.repository"));
   assert.ok(flag[1].includes("github.actor == 'dependabot[bot]'"));
+  assert.ok(flag[1].includes("github.event.pull_request.user.login == 'dependabot[bot]'"), "a reopened Dependabot pull request is still without secrets");
   assert.equal(plan.text.split("github.actor == 'dependabot[bot]'").length, 2, "the condition is written once");
   const skipped = /^ {8}if: \$\{\{ env\.WITHOUT_SECRETS != 'true' \}\}$/m;
   for (const name of ["Read the pins", "Check out cognitio-tooling", "Check out serverless-registry", "Check the pins", "Test cognitio-tooling", "Test the install", "Set up OpenTofu", "OpenTofu plan"]) {
@@ -220,7 +221,7 @@ test("a run without secrets skips the steps that need them", () => {
   assert.match(without, /node --test test\/tofu\.test\.mjs test\/scripts\.test\.mjs test\/pins\.test\.mjs test\/workflows\.test\.mjs/);
   // Whatever has no condition must not touch a checkout or the secrets.
   for (const step of plan.steps) {
-    if (/WITHOUT_SECRETS/.test(step.text)) continue;
+    if (/if: \$\{\{ env\.WITHOUT_SECRETS != 'true' \}\}/.test(step.text)) continue;
     assert.doesNotMatch(code(step), /cognitio-tooling|check-pins|tofu\.sh|secrets\.|configs\.test/, step.name);
     if (!/working-directory: files/.test(step.text)) assert.doesNotMatch(code(step), /run: npm test/, step.name);
   }
@@ -231,4 +232,47 @@ test("plan.yml runs for a pull request to main and cancels older runs", () => {
   assert.match(plan.head, /^ {2}pull_request:\n {4}branches: \[main\]$/m);
   assert.match(plan.head, /^ {2}group: plan-\$\{\{ github\.event\.pull_request\.number \}\}\n {2}cancel-in-progress: true$/m);
   assert.doesNotMatch(plan.text, /tofu\.sh apply|wrangler/);
+});
+
+test("the pin-reading steps are the same in both workflows", () => {
+  const strip = (step) => step.lines.filter((line) => !/^ {8}if: /.test(line)).join("\n");
+  for (const name of ["Read the pins", "Check out cognitio-tooling", "Check out serverless-registry"]) {
+    assert.equal(strip(named(plan, name)), strip(named(deploy, name)), name);
+  }
+});
+
+test("a workflow reads secrets, step outputs and the environment only by name", () => {
+  for (const workflow of both) {
+    for (const [at, line] of workflow.text.split("\n").entries()) {
+      if (/^ {6}- name: /.test(line)) continue;
+      const expressions = /^\s*if: /.test(line) ? line : (line.match(/\$\{\{.*?\}\}/g) ?? []).join(" ");
+      for (const token of expressions.matchAll(/\bsecrets\b/g)) {
+        const rest = expressions.slice(token.index);
+        assert.match(rest, /^secrets\.(CLOUDFLARE_API_TOKEN|TOFU_STATE_PASSPHRASE|ACCESS_ALLOWED_EMAILS|COGNITIO_TOOLING_DEPLOY_KEY)\b/, `${workflow.file}: ${line.trim()}`);
+      }
+      for (const token of line.matchAll(/steps\.tofu\.outputs/g)) {
+        assert.match(line.slice(token.index), /^steps\.tofu\.outputs\.[A-Z0-9_]+/, `${workflow.file}: ${line.trim()}`);
+      }
+      assert.doesNotMatch(line, /toJSON|GITHUB_ENV/, `${workflow.file}:${at}`);
+    }
+    for (const line of workflow.text.split("\n")) {
+      if (/^ {6}- /.test(line)) assert.match(line, /^ {6}- name: /, `${workflow.file}: ${line}`);
+    }
+  }
+});
+
+test("the deploy takes the tag and the Worker names from their homes", () => {
+  const checked = named(deploy, "Check the pins").text;
+  assert.match(checked, /pins=\$\(scripts\/check-pins\.sh\)/);
+  assert.doesNotMatch(checked, /tag --points-at|describe/);
+  const verify = named(deploy, "Verify the deployments").text;
+  assert.doesNotMatch(verify, /--name/);
+  assert.match(verify, /deployments status --json --config "\$1"/);
+});
+
+test("the no-secrets test list is every test file but the one needing a checkout", () => {
+  const listed = /node --test ((?:test\/\S+\.test\.mjs ?)+)$/m.exec(named(plan, "Test the install without the checkouts").text);
+  assert.ok(listed);
+  const expected = readdirSync(here).filter((f) => f.endsWith(".test.mjs") && f !== "configs.test.mjs").map((f) => `test/${f}`).sort();
+  assert.deepEqual(listed[1].trim().split(" ").sort(), expected);
 });

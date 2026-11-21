@@ -24,7 +24,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     env:
-      WITHOUT_SECRETS: ${{ github.event.pull_request.head.repo.full_name != github.repository || github.actor == 'dependabot[bot]' }}
+      WITHOUT_SECRETS: ${{ github.event.pull_request.head.repo.full_name != github.repository || github.actor == 'dependabot[bot]' || github.event.pull_request.user.login == 'dependabot[bot]' }}
     steps:
       - name: Check out the install
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -32,6 +32,10 @@ jobs:
           submodules: false
           persist-credentials: false
 
+      # The pin-reading steps (this one, the two checkouts and the pin check) are written out in
+      # both deploy.yml and plan.yml on purpose: a workflow cannot share steps without a further
+      # file. test/workflows.test.mjs holds the two copies textually identical, so a pull request's
+      # plan checks the repositories and commits the deploy ships.
       - name: Read the pins
         if: ${{ env.WITHOUT_SECRETS != 'true' }}
         id: pins
