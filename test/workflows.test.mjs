@@ -390,3 +390,109 @@ test("the no-secrets test list is every test file but the one needing a checkout
   const expected = readdirSync(here).filter((f) => f.endsWith(".test.mjs") && f !== "configs.test.mjs").map((f) => `test/${f}`).sort();
   assert.deepEqual(listed[1].trim().split(" ").sort(), expected);
 });
+
+// The deploys of the two Workers that keep secrets the workflow does not upload ("Deploy the
+// registry", "Deploy the files Worker"): each step's script, run with stub `npx` and `pnpm` that
+// answer `wrangler deployments status --json` and `wrangler versions list --json` and record a
+// `deploy`.
+const KEEPING_DEPLOYS = [
+  { step: "Deploy the registry", tool: "pnpm", cwd: "serverless-registry", worker: "tandem-tooling-registry" },
+  { step: "Deploy the files Worker", tool: "npx", cwd: ".", worker: "tandem-tooling-files" },
+];
+const scriptOf = (step) => {
+  const at = step.lines.findIndex((line) => /^ {8}run: \|$/.test(line));
+  return step.lines.slice(at + 1).map((line) => line.slice(10)).join("\n");
+};
+const VERSION_A = "11111111-1111-4111-8111-111111111111";
+const VERSION_B = "22222222-2222-4222-8222-222222222222";
+const VERSION_C = "33333333-3333-4333-8333-333333333333";
+// `wrangler versions list --json`: an array of versions, oldest first, each with `id` and `metadata.created_on`.
+const versionList = (...ids) => ids.map((id, i) => ({ id, metadata: { created_on: `2026-11-0${i + 1}T10:00:00.000000Z` } }));
+// `wrangler deployments status --json`: the latest deployment, `versions[]` with `version_id` and `percentage`.
+const deployment = (...versions) => ({ id: "d", versions: versions.map(([version_id, percentage]) => ({ version_id, percentage })) });
+
+function runKeepingDeploy({ step, tool, cwd, worker }, { versions, deployed }) {
+  const dir = mkdtempSync(resolve(tmpdir(), "keeping-deploy-test-"));
+  try {
+    const bin = resolve(dir, "bin");
+    const work = resolve(dir, "work");
+    spawnSync("mkdir", ["-p", bin, resolve(work, "serverless-registry"), resolve(work, "workers"), resolve(work, "files")]);
+    for (const file of ["workers/registry.wrangler.jsonc", "files/wrangler.jsonc"]) {
+      writeFileSync(resolve(work, file), readFileSync(resolve(here, "..", file)));
+    }
+    writeFileSync(resolve(dir, "versions.json"), JSON.stringify(versions));
+    writeFileSync(resolve(dir, "deployment.json"), JSON.stringify(deployed));
+    const stub =
+      `#!/bin/bash\nargs="$*"\n` +
+      `case "$args" in\n` +
+      `  *"deployments status --json"*) cat "$STUB_DIR/deployment.json" ;;\n` +
+      `  *"versions list --json"*) cat "$STUB_DIR/versions.json" ;;\n` +
+      `  *" deploy "*) echo "deploy $args" >> "$STUB_DIR/calls" ;;\n` +
+      `  *) echo "unexpected: $args" >&2; exit 9 ;;\n` +
+      `esac\n`;
+    for (const name of ["npx", "pnpm"]) writeFileSync(resolve(bin, name), stub, { mode: 0o755 });
+    const script = scriptOf(named(deploy, step));
+    const run = spawnSync("bash", ["-c", script], {
+      cwd: resolve(work, cwd),
+      encoding: "utf8",
+      env: {
+        PATH: `${bin}:${process.env.PATH}`,
+        STUB_DIR: dir,
+        MESSAGE: "m",
+        CLOUDFLARE_API_TOKEN: "test-token",
+        CLOUDFLARE_ACCOUNT_ID: "test-account",
+      },
+    });
+    let calls = "";
+    try {
+      calls = readFileSync(resolve(dir, "calls"), "utf8");
+    } catch {}
+    return { ...run, calls, worker };
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+test("a deploy that keeps the Worker's secrets refuses while the latest version is not the one serving", () => {
+  for (const target of KEEPING_DEPLOYS) {
+    const r = runKeepingDeploy(target, { versions: versionList(VERSION_A, VERSION_B, VERSION_C), deployed: deployment([VERSION_B, 100]) });
+    assert.equal(r.status, 1, `${target.step}: ${r.stderr}`);
+    for (const text of [target.worker, VERSION_B, VERSION_C, "secrets from the latest version"]) {
+      assert.ok(r.stderr.includes(text), `${target.step}: stderr lacks ${text}: ${r.stderr}`);
+    }
+    assert.equal(r.calls, "", `${target.step}: wrangler deploy ran`);
+  }
+});
+
+test("a deploy that keeps the Worker's secrets refuses a split deployment", () => {
+  for (const target of KEEPING_DEPLOYS) {
+    const r = runKeepingDeploy(target, {
+      versions: versionList(VERSION_A, VERSION_C),
+      deployed: deployment([VERSION_C, 90], [VERSION_A, 10]),
+    });
+    assert.equal(r.status, 1, `${target.step}: ${r.stderr}`);
+    for (const text of [target.worker, VERSION_A, VERSION_C]) {
+      assert.ok(r.stderr.includes(text), `${target.step}: stderr lacks ${text}: ${r.stderr}`);
+    }
+    assert.equal(r.calls, "", `${target.step}: wrangler deploy ran`);
+  }
+});
+
+test("a deploy that keeps the Worker's secrets deploys when the latest version serves 100 %", () => {
+  for (const target of KEEPING_DEPLOYS) {
+    const r = runKeepingDeploy(target, { versions: versionList(VERSION_A, VERSION_B, VERSION_C), deployed: deployment([VERSION_C, 100]) });
+    assert.equal(r.status, 0, `${target.step}: ${r.stderr}`);
+    assert.match(r.calls, /deploy .*--message m/, target.step);
+  }
+});
+
+test("the two copies of the secrets-inheritance check are textually identical", () => {
+  const shared = (name) => {
+    const lines = scriptOf(named(deploy, name)).split("\n");
+    const from = lines.findIndex((line) => line.startsWith("worker="));
+    const to = lines.findIndex((line) => / deploy --config /.test(line));
+    assert.ok(from > 0 && to > from, name);
+    return lines.slice(from, to).join("\n");
+  };
+  assert.equal(shared("Deploy the registry"), shared("Deploy the files Worker"));
+});

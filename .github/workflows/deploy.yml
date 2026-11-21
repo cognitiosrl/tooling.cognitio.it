@@ -281,6 +281,19 @@ jobs:
           MESSAGE: serverless-registry@${{ steps.pins.outputs.registry_commit }}
         run: |
           set -euo pipefail
+          config=../workers/registry.wrangler.jsonc
+          wr() { pnpm exec wrangler "$@"; }
+          # A deploy takes the secrets this workflow does not upload from the Worker's latest
+          # version, which is the serving one only when the deployment is that version alone at
+          # 100 %. The two copies of this check are deliberate: a workflow cannot share a step
+          # without a new file.
+          worker=$(sed -n 's/^ *"name": *"\([^"]*\)".*/\1/p' "$config")
+          deployed=$(wr deployments status --json --config "$config" | jq -r '[.versions[] | "\(.version_id) (\(.percentage) %)"] | join(", ")')
+          latest=$(wr versions list --json --config "$config" | jq -r 'sort_by(.metadata.created_on) | last | .id')
+          if [ "$deployed" != "$latest (100 %)" ]; then
+            echo "$worker: refusing to deploy. Serving: $deployed. Latest version: $latest. A deploy would take its secrets from the latest version: deploy or re-put the secrets on the serving line first." >&2
+            exit 1
+          fi
           pnpm exec wrangler deploy --config ../workers/registry.wrangler.jsonc --message "$MESSAGE"
 
       - name: Deploy the files Worker
@@ -292,6 +305,19 @@ jobs:
           MESSAGE: ${{ github.repository }}@${{ github.sha }}
         run: |
           set -euo pipefail
+          config=files/wrangler.jsonc
+          wr() { npx wrangler "$@"; }
+          # A deploy takes the secrets this workflow does not upload from the Worker's latest
+          # version, which is the serving one only when the deployment is that version alone at
+          # 100 %. The two copies of this check are deliberate: a workflow cannot share a step
+          # without a new file.
+          worker=$(sed -n 's/^ *"name": *"\([^"]*\)".*/\1/p' "$config")
+          deployed=$(wr deployments status --json --config "$config" | jq -r '[.versions[] | "\(.version_id) (\(.percentage) %)"] | join(", ")')
+          latest=$(wr versions list --json --config "$config" | jq -r 'sort_by(.metadata.created_on) | last | .id')
+          if [ "$deployed" != "$latest (100 %)" ]; then
+            echo "$worker: refusing to deploy. Serving: $deployed. Latest version: $latest. A deploy would take its secrets from the latest version: deploy or re-put the secrets on the serving line first." >&2
+            exit 1
+          fi
           npx wrangler deploy --config files/wrangler.jsonc --message "$MESSAGE"
 
       - name: Verify the deployments
