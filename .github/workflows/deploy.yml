@@ -1,0 +1,278 @@
+# Deploys the tooling hosts: OpenTofu for the infrastructure, then Wrangler for the Workers.
+#
+# Which step holds which credential (nothing is exported to the job's env):
+#   CLOUDFLARE_API_TOKEN           OpenTofu apply, D1 migrations, each Deploy step, Verify the deployments
+#   TOFU_STATE_PASSPHRASE          OpenTofu apply
+#   ACCESS_ALLOWED_EMAILS          OpenTofu apply
+#   COGNITIO_TOOLING_DEPLOY_KEY    Check out cognitio-tooling
+#   VERIFIER_KEY, CSRF_KEY         Write the secrets files (OpenTofu's masked step outputs)
+#   D1_DATABASE_ID, ACCESS_AUD     Fill the Wrangler configuration (OpenTofu's step outputs)
+# A push applies no infrastructure change: a change to a gate is read in a plan_only run, then
+# dispatched with infra_change_confirmed (and delete_confirmed for a delete or a replace).
+
+name: deploy
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      plan_only:
+        description: Show OpenTofu's plan and stop
+        type: boolean
+        default: false
+      infra_change_confirmed:
+        description: Apply a plan that changes infrastructure, after reading it in a plan_only run
+        type: boolean
+        default: false
+      delete_confirmed:
+        description: Also allow the plan to delete or replace a resource
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: deploy-${{ github.repository }}
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Check out the install
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          submodules: false
+          persist-credentials: false
+
+      - name: Read the pins
+        id: pins
+        run: |
+          set -euo pipefail
+          repository() {
+            local url
+            url=$(git config --file .gitmodules --get "submodule.$1.url")
+            url=${url#https://github.com/}
+            printf '%s' "${url%.git}"
+          }
+          {
+            printf 'tooling_repository=%s\n' "$(repository cognitio-tooling)"
+            printf 'tooling_commit=%s\n' "$(git rev-parse HEAD:cognitio-tooling)"
+            printf 'registry_repository=%s\n' "$(repository serverless-registry)"
+            printf 'registry_commit=%s\n' "$(git rev-parse HEAD:serverless-registry)"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Check out cognitio-tooling
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ${{ steps.pins.outputs.tooling_repository }}
+          ref: ${{ steps.pins.outputs.tooling_commit }}
+          path: cognitio-tooling
+          fetch-depth: 0
+          persist-credentials: false
+          ssh-key: ${{ secrets.COGNITIO_TOOLING_DEPLOY_KEY }}
+
+      - name: Check out serverless-registry
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ${{ steps.pins.outputs.registry_repository }}
+          ref: ${{ steps.pins.outputs.registry_commit }}
+          path: serverless-registry
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Check the pins
+        id: checked
+        run: |
+          set -euo pipefail
+          scripts/check-pins.sh
+          tag=$(git -C cognitio-tooling tag --points-at HEAD | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | head -n 1)
+          printf 'tag=%s\n' "$tag" >> "$GITHUB_OUTPUT"
+
+      - name: Set up Node
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: .nvmrc
+
+      - name: Install the install's dependencies
+        run: npm ci
+
+      - name: Test cognitio-tooling
+        working-directory: cognitio-tooling
+        run: npm test
+
+      - name: Test the install
+        run: npm test
+
+      - name: Test the files Worker
+        working-directory: files
+        run: npm test
+
+      - name: Set up OpenTofu
+        uses: opentofu/setup-opentofu@a1320f892987e89d278cc92dc5adc984fb93aca4 # v2.0.2
+        with:
+          tofu_version_file: iac/.opentofu-version
+          tofu_wrapper: false
+
+      - name: OpenTofu apply
+        id: tofu
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          TOFU_STATE_PASSPHRASE: ${{ secrets.TOFU_STATE_PASSPHRASE }}
+          ACCESS_ALLOWED_EMAILS: ${{ secrets.ACCESS_ALLOWED_EMAILS }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_ZONE_IDS: ${{ vars.CLOUDFLARE_ZONE_IDS }}
+          TOFU_STATE_BUCKET: ${{ vars.TOFU_STATE_BUCKET }}
+          ACCESS_IDP_ID: ${{ vars.ACCESS_IDP_ID }}
+          ADMIN_SERVICE_TOKEN_ID: ${{ vars.ADMIN_SERVICE_TOKEN_ID }}
+          EVENT_NAME: ${{ github.event_name }}
+          PLAN_ONLY: ${{ inputs.plan_only }}
+          INFRA_CHANGE_CONFIRMED: ${{ inputs.infra_change_confirmed }}
+          DELETE_CONFIRMED: ${{ inputs.delete_confirmed }}
+        run: |
+          set -euo pipefail
+          if [ "$PLAN_ONLY" = true ]; then
+            scripts/tofu.sh plan
+            exit 0
+          fi
+          flags=()
+          if [ "$EVENT_NAME" = workflow_dispatch ]; then
+            if [ "$INFRA_CHANGE_CONFIRMED" = true ]; then flags+=(--confirmed); fi
+            if [ "$DELETE_CONFIRMED" = true ]; then flags+=(--delete-confirmed); fi
+          fi
+          scripts/tofu.sh apply ${flags[@]+"${flags[@]}"}
+          scripts/tofu.sh output --github-output "$GITHUB_OUTPUT"
+
+      - name: Fill the Wrangler configuration
+        if: ${{ inputs.plan_only != true }}
+        env:
+          D1_DATABASE_ID: ${{ steps.tofu.outputs.D1_DATABASE_ID }}
+          ACCESS_AUD: ${{ steps.tofu.outputs.ADMIN_ACCESS_AUD }}
+          ACCESS_TEAM_DOMAIN: ${{ vars.ACCESS_TEAM_DOMAIN }}
+        run: |
+          set -euo pipefail
+          node scripts/fill-config.mjs workers/admin.wrangler.jsonc
+          node scripts/fill-config.mjs workers/serve.wrangler.jsonc
+
+      - name: D1 migrations
+        if: ${{ inputs.plan_only != true }}
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          set -euo pipefail
+          bookmark=$(npx wrangler d1 time-travel info cognitio-tooling --json --config workers/admin.filled.jsonc)
+          {
+            printf '### D1 rollback bookmark\n\n'
+            printf '%s\n' '```json'
+            printf '%s\n' "$bookmark"
+            printf '%s\n' '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          npx wrangler d1 migrations apply cognitio-tooling --remote --config workers/admin.filled.jsonc
+
+      - name: Write the secrets files
+        if: ${{ inputs.plan_only != true }}
+        env:
+          VERIFIER_KEY: ${{ steps.tofu.outputs.VERIFIER_KEY }}
+          CSRF_KEY: ${{ steps.tofu.outputs.CSRF_KEY }}
+        run: |
+          set -euo pipefail
+          umask 077
+          node scripts/secrets-file.mjs "$RUNNER_TEMP/serve-secrets.json" VERIFIER_KEY
+          node scripts/secrets-file.mjs "$RUNNER_TEMP/admin-secrets.json" VERIFIER_KEY CSRF_KEY
+
+      - name: Deploy the admin Worker
+        if: ${{ inputs.plan_only != true }}
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+          WRANGLER_OUTPUT_FILE_PATH: ${{ runner.temp }}/wrangler-admin.ndjson
+          MESSAGE: cognitio-tooling@${{ steps.checked.outputs.tag }}
+        run: |
+          set -euo pipefail
+          npx wrangler deploy --config workers/admin.filled.jsonc --secrets-file "$RUNNER_TEMP/admin-secrets.json" --message "$MESSAGE"
+
+      - name: Deploy the serve Worker
+        if: ${{ inputs.plan_only != true }}
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+          WRANGLER_OUTPUT_FILE_PATH: ${{ runner.temp }}/wrangler-serve.ndjson
+          MESSAGE: cognitio-tooling@${{ steps.checked.outputs.tag }}
+        run: |
+          set -euo pipefail
+          npx wrangler deploy --config workers/serve.filled.jsonc --secrets-file "$RUNNER_TEMP/serve-secrets.json" --message "$MESSAGE"
+
+      - name: Set up pnpm
+        if: ${{ inputs.plan_only != true }}
+        uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6.1.1
+        with:
+          package_json_file: serverless-registry/package.json
+          run_install: false
+
+      - name: Install the registry's dependencies
+        if: ${{ inputs.plan_only != true }}
+        working-directory: serverless-registry
+        run: pnpm install --frozen-lockfile
+
+      - name: Deploy the registry
+        if: ${{ inputs.plan_only != true }}
+        working-directory: serverless-registry
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+          WRANGLER_OUTPUT_FILE_PATH: ${{ runner.temp }}/wrangler-registry.ndjson
+          MESSAGE: serverless-registry@${{ steps.pins.outputs.registry_commit }}
+        run: |
+          set -euo pipefail
+          pnpm exec wrangler deploy --config ../workers/registry.wrangler.jsonc --message "$MESSAGE"
+
+      - name: Deploy the files Worker
+        if: ${{ inputs.plan_only != true }}
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+          WRANGLER_OUTPUT_FILE_PATH: ${{ runner.temp }}/wrangler-files.ndjson
+          MESSAGE: ${{ github.repository }}@${{ github.sha }}
+        run: |
+          set -euo pipefail
+          npx wrangler deploy --config files/wrangler.jsonc --message "$MESSAGE"
+
+      - name: Remove the secrets files
+        if: ${{ always() }}
+        run: rm -f "$RUNNER_TEMP/serve-secrets.json" "$RUNNER_TEMP/admin-secrets.json"
+
+      - name: Verify the deployments
+        if: ${{ inputs.plan_only != true }}
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          set -euo pipefail
+          verify() {
+            npx wrangler deployments status --json --name "$1" > "$RUNNER_TEMP/deployment-$2.json"
+            node scripts/verify-deploy.mjs --wrangler-output "$RUNNER_TEMP/wrangler-$2.ndjson" --deployment "$RUNNER_TEMP/deployment-$2.json"
+          }
+          verify cognitio-tooling-admin admin
+          verify cognitio-tooling serve
+          verify tandem-tooling-registry registry
+          verify tandem-tooling-files files
+
+      - name: Smoke test the public hosts
+        if: ${{ inputs.plan_only != true }}
+        run: |
+          set -euo pipefail
+          for url in \
+            https://tooling.aggrega.ai/v2/ \
+            https://tooling.aggrega.ai/tandemsdd/marketplace.json \
+            https://tooling.cognitio.it/l10n/index.json; do
+            status=$(curl --silent --output /dev/null --max-time 30 --write-out '%{http_code}' "$url")
+            if [ "$status" != 401 ]; then
+              echo "$url answered $status; a request without credentials must be refused with 401" >&2
+              exit 1
+            fi
+          done

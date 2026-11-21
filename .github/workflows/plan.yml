@@ -1,0 +1,121 @@
+# Runs the tests and shows OpenTofu's plan for a pull request to main. Nothing is applied.
+# A pull request from a fork or by Dependabot has no secrets: the checkout of cognitio-tooling
+# and every step that needs it are skipped there, and the tests that need no checkout run.
+#
+# Which step holds which credential:
+#   CLOUDFLARE_API_TOKEN, TOFU_STATE_PASSPHRASE, ACCESS_ALLOWED_EMAILS   OpenTofu plan
+#   COGNITIO_TOOLING_DEPLOY_KEY                                          Check out cognitio-tooling
+
+name: plan
+
+on:
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: plan-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  plan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      WITHOUT_SECRETS: ${{ github.event.pull_request.head.repo.full_name != github.repository || github.actor == 'dependabot[bot]' }}
+    steps:
+      - name: Check out the install
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          submodules: false
+          persist-credentials: false
+
+      - name: Read the pins
+        if: ${{ env.WITHOUT_SECRETS != 'true' }}
+        id: pins
+        run: |
+          set -euo pipefail
+          repository() {
+            local url
+            url=$(git config --file .gitmodules --get "submodule.$1.url")
+            url=${url#https://github.com/}
+            printf '%s' "${url%.git}"
+          }
+          {
+            printf 'tooling_repository=%s\n' "$(repository cognitio-tooling)"
+            printf 'tooling_commit=%s\n' "$(git rev-parse HEAD:cognitio-tooling)"
+            printf 'registry_repository=%s\n' "$(repository serverless-registry)"
+            printf 'registry_commit=%s\n' "$(git rev-parse HEAD:serverless-registry)"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Check out cognitio-tooling
+        if: ${{ env.WITHOUT_SECRETS != 'true' }}
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ${{ steps.pins.outputs.tooling_repository }}
+          ref: ${{ steps.pins.outputs.tooling_commit }}
+          path: cognitio-tooling
+          fetch-depth: 0
+          persist-credentials: false
+          ssh-key: ${{ secrets.COGNITIO_TOOLING_DEPLOY_KEY }}
+
+      - name: Check out serverless-registry
+        if: ${{ env.WITHOUT_SECRETS != 'true' }}
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ${{ steps.pins.outputs.registry_repository }}
+          ref: ${{ steps.pins.outputs.registry_commit }}
+          path: serverless-registry
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Check the pins
+        if: ${{ env.WITHOUT_SECRETS != 'true' }}
+        run: scripts/check-pins.sh
+
+      - name: Set up Node
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: .nvmrc
+
+      - name: Install the install's dependencies
+        run: npm ci
+
+      - name: Test cognitio-tooling
+        if: ${{ env.WITHOUT_SECRETS != 'true' }}
+        working-directory: cognitio-tooling
+        run: npm test
+
+      - name: Test the install
+        if: ${{ env.WITHOUT_SECRETS != 'true' }}
+        run: npm test
+
+      - name: Test the install without the checkouts
+        if: ${{ env.WITHOUT_SECRETS == 'true' }}
+        run: node --test test/tofu.test.mjs test/scripts.test.mjs test/pins.test.mjs test/workflows.test.mjs
+
+      - name: Test the files Worker
+        working-directory: files
+        run: npm test
+
+      - name: Set up OpenTofu
+        if: ${{ env.WITHOUT_SECRETS != 'true' }}
+        uses: opentofu/setup-opentofu@a1320f892987e89d278cc92dc5adc984fb93aca4 # v2.0.2
+        with:
+          tofu_version_file: iac/.opentofu-version
+          tofu_wrapper: false
+
+      - name: OpenTofu plan
+        if: ${{ env.WITHOUT_SECRETS != 'true' }}
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          TOFU_STATE_PASSPHRASE: ${{ secrets.TOFU_STATE_PASSPHRASE }}
+          ACCESS_ALLOWED_EMAILS: ${{ secrets.ACCESS_ALLOWED_EMAILS }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_ZONE_IDS: ${{ vars.CLOUDFLARE_ZONE_IDS }}
+          TOFU_STATE_BUCKET: ${{ vars.TOFU_STATE_BUCKET }}
+          ACCESS_IDP_ID: ${{ vars.ACCESS_IDP_ID }}
+          ADMIN_SERVICE_TOKEN_ID: ${{ vars.ADMIN_SERVICE_TOKEN_ID }}
+        run: scripts/tofu.sh plan
