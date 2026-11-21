@@ -2,7 +2,7 @@ node_modules/
 .wrangler/
 *.filled.jsonc
 *secrets*.json
-consumers.htpasswd
+consumers.htpasswd*
 iac/.terraform/
 *.tfstate
 *.tfstate.*

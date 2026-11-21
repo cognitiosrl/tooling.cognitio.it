@@ -1,5 +1,6 @@
-// The deploy scripts: fill-config.mjs, secrets-file.mjs and verify-deploy.mjs. No network, no
-// Cloudflare account; every secret value is a literal made up here.
+// The deploy scripts: fill-config.mjs, secrets-file.mjs and verify-deploy.mjs, and the files
+// holding secrets that git ignores. No network, no Cloudflare account; every secret value is a
+// literal made up here.
 
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
@@ -218,5 +219,12 @@ test("verify-deploy refuses malformed output, a missing deploy entry and an empt
     assert.equal(result.stderr.trim(), `verify-deploy: ${status} lists no versions`);
   } finally {
     rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("the consumers file and the temporary file consumers.mjs writes beside it are git-ignored", () => {
+  for (const path of ["consumers.htpasswd", "consumers.htpasswd.tmp-4242"]) {
+    const r = spawnSync("git", ["check-ignore", "--no-index", "--quiet", path], { cwd: resolve(here, ".."), encoding: "utf8" });
+    assert.equal(r.status, 0, `${path} is not ignored ${r.stderr}`);
   }
 });
