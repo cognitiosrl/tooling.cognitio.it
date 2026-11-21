@@ -25,10 +25,11 @@
 //   500  the Worker is not configured: no bucket binding, no valid PUBLICATIONS or
 //        ANY_PUBLICATION_HOSTS, or no valid consumer list. Nothing is read.
 //   401  no Basic credential, or one matching no consumer. Nothing is looked up.
+//   405  a method other than GET, HEAD included, whatever the path names: nothing is
+//        resolved or read, so the answer tells one publication from another no better.
 //   404  the credential's consumer is not allowed the publication the path names: the
 //        answer a file that does not exist gets, the same body and headers, and nothing
 //        is read, so a consumer learns nothing of the publications it is not allowed.
-//   405  a method other than GET.
 //   404  a publication not configured, a path outside the rules below, or no object.
 //   200  the object.
 //
@@ -439,13 +440,13 @@ export default {
         "www-authenticate": `Basic realm="${REALM}", charset="UTF-8"`,
       });
     }
+    if (request.method !== "GET") {
+      return refusal(405, "Only GET is served.", { allow: "GET" });
+    }
     const url = new URL(request.url);
     const { publication, path } = splitPath(url.pathname);
     if (!allows(consumer, publication)) {
       return notFound();
-    }
-    if (request.method !== "GET") {
-      return refusal(405, "Only GET is served.", { allow: "GET" });
     }
     const target = publicationFor(config, url.hostname, publication);
     if (!target || path === null) {

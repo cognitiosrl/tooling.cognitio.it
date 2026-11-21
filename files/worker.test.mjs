@@ -435,32 +435,31 @@ test("401 comes before 405 and 404", async () => {
   }
 });
 
-test("a publication the consumer is not allowed answers 404 as no object does, before 405, and reads nothing", async () => {
+test("a publication the consumer is not allowed answers 404 as no object does, and reads nothing", async () => {
   const absent = await worker.fetch(req("/tandemsdd/archives/tandem-9.9.9.zip"), env(STORE));
   assert.equal(absent.status, 404);
   const body = await absent.text();
-  for (const [path, method] of [
-    ["/tandemsdd/marketplace.json", "PUT"],
-    ["/tandemsdd/marketplace.json", "GET"],
-    ["/tandemsdd/missing.json", "GET"],
-    ["/tandemsdd/%2e%2e/x", "GET"],
-    ["/nowhere/x.json", "GET"],
-  ]) {
+  for (const path of ["/tandemsdd/marketplace.json", "/tandemsdd/missing.json", "/tandemsdd/%2e%2e/x", "/nowhere/x.json"]) {
     const e = env(STORE);
-    const res = await worker.fetch(req(path, { method, auth: as(CUSTOMER) }), e);
-    assert.equal(res.status, 404, `${method} ${path}`);
-    assert.equal(await res.text(), body, `${method} ${path}: the body of a file that does not exist`);
-    assert.deepEqual([...res.headers.keys()].sort(), [...absent.headers.keys()].sort(), `${method} ${path}: its headers too`);
+    const res = await worker.fetch(req(path, { auth: as(CUSTOMER) }), e);
+    assert.equal(res.status, 404, path);
+    assert.equal(await res.text(), body, `${path}: the body of a file that does not exist`);
+    assert.deepEqual([...res.headers.keys()].sort(), [...absent.headers.keys()].sort(), `${path}: its headers too`);
     assert.deepEqual(e.FILES.asked, []);
   }
 });
 
-test("405 for every method but GET, HEAD included, before 404", async () => {
+test("405 for every method but GET, HEAD included, right after authentication: before the grant check and 404", async () => {
   for (const method of ["HEAD", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"]) {
-    for (const path of ["/tandemsdd/marketplace.json", "/tandemsdd/missing.json"]) {
+    for (const [consumer, path] of [
+      [COGNITIO, "/tandemsdd/marketplace.json"],
+      [COGNITIO, "/tandemsdd/missing.json"],
+      [CUSTOMER, "/tandemsdd/marketplace.json"],
+      [CUSTOMER, "/nowhere/x.json"],
+    ]) {
       const e = env(STORE);
-      const res = await worker.fetch(req(path, { method }), e);
-      assert.equal(res.status, 405, `${method} ${path}`);
+      const res = await worker.fetch(req(path, { method, auth: as(consumer) }), e);
+      assert.equal(res.status, 405, `${consumer.name} ${method} ${path}`);
       assert.equal(res.headers.get("allow"), "GET");
       assert.deepEqual(e.FILES.asked, []);
     }
