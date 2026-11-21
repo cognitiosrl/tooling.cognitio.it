@@ -5,10 +5,12 @@
 #   scripts/tofu.sh plan
 #       init, plan; changes nothing.
 #   scripts/tofu.sh apply [--confirmed] [--delete-confirmed]
-#       init, plan, then apply. A plan that deletes or replaces a resource is
-#       refused unless both --confirmed and --delete-confirmed are given; any
-#       other change (create, update, import) is refused unless --confirmed is
-#       given; an empty plan applies nothing and exits 0.
+#       init, plan, then apply. A plan that deletes, replaces or forgets (drops
+#       from the state) a resource is refused unless both --confirmed and
+#       --delete-confirmed are given; any other resource change (create,
+#       update, import) is refused unless --confirmed is given. A plan that
+#       changes only outputs is applied without either flag; a plan with no
+#       change applies nothing and exits 0.
 #   scripts/tofu.sh output --github-output <file>
 #       init, then write every output to <file> as NAME=value lines, the
 #       sensitive ones masked first. Only under GitHub Actions.
@@ -292,19 +294,31 @@ if [ "$ACTION" = plan ]; then
 fi
 
 # The plan JSON carries values (the sensitive ones too): it stays in $WORK and
-# only the resource addresses are read from it.
+# only the resource addresses and the output names are read from it.
 tofu show -json "$plan" >"$WORK/plan.json"
 changes="$(jq -r '.resource_changes[]?
   | select((.change.actions != ["no-op"] and .change.actions != ["read"]) or (.change.importing != null))
   | .address' "$WORK/plan.json")"
-deletes="$(jq -r '.resource_changes[]? | select(.change.actions | index("delete")) | .address' "$WORK/plan.json")"
+# A forget drops a resource from the state and leaves it in the account; declaring it
+# again then creates a new one (new keys, for a random_bytes), so it is gated as a delete.
+deletes="$(jq -r '.resource_changes[]?
+  | select(.change.actions | (index("delete") or index("forget")))
+  | .address' "$WORK/plan.json")"
+outputs="$(jq -r '[.output_changes // {} | to_entries[] | select(.value.actions != ["no-op"]) | .key]
+  | join(", ")' "$WORK/plan.json")"
 
 if [ -z "$changes" ]; then
-  echo "tofu.sh: the plan has no changes; nothing applied"
+  if [ -z "$outputs" ]; then
+    echo "tofu.sh: the plan has no changes; nothing applied"
+    exit 0
+  fi
+  # Applying it writes the outputs into the state and touches no resource.
+  echo "tofu.sh: the plan changes only outputs: $outputs"
+  tofu apply -input=false -no-color -lock-timeout=10m "$plan"
   exit 0
 fi
 if [ -n "$deletes" ] && [ "$DELETE_CONFIRMED" = 0 ]; then
-  echo "tofu.sh: the plan deletes or replaces:" >&2
+  echo "tofu.sh: the plan deletes, replaces or forgets:" >&2
   list "$deletes"
   die 1 "apply refused; to allow it, pass --confirmed --delete-confirmed"
 fi

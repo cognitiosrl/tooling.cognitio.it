@@ -277,7 +277,7 @@ test('apply without --confirmed refuses a create, naming the address', () => {
   assert.equal(r.status, 1);
   assert.match(r.stderr, /the plan changes:\n {2}cloudflare_d1_database\.tooling\n/);
   assert.match(r.stderr, /apply refused; to allow it, pass --confirmed$/m);
-  assert.ok(!r.stderr.includes('deletes or replaces'));
+  assert.ok(!r.stderr.includes('deletes, replaces or forgets'));
   assert.equal(called(r, 'apply').length, 0);
 });
 
@@ -287,7 +287,7 @@ test('apply without --confirmed refuses an import', () => {
   assert.equal(r.status, 1);
   assert.match(r.stderr, /the plan changes:\n {2}cloudflare_r2_bucket\.tooling\n/);
   assert.match(r.stderr, /apply refused; to allow it, pass --confirmed$/m);
-  assert.ok(!r.stderr.includes('deletes or replaces'));
+  assert.ok(!r.stderr.includes('deletes, replaces or forgets'));
   assert.equal(called(r, 'apply').length, 0);
 });
 
@@ -315,6 +315,23 @@ test('a replace counts as a delete', () => {
   assert.equal(r.status, 1);
   assert.match(r.stderr, /^ {2}cloudflare_workers_route\.serve$/m);
   assert.equal(called(r, 'apply').length, 0);
+});
+
+test('a forget counts as a delete', () => {
+  const { run } = setup();
+  const r = run(['apply', '--confirmed'], { STUB_PLAN_JSON: fixture('plan-forget.json') });
+  assert.equal(r.status, 1);
+  assert.match(r.stderr, /^ {2}random_bytes\.verifier_key$/m);
+  assert.match(r.stderr, /apply refused; to allow it, pass --confirmed --delete-confirmed$/m);
+  assert.equal(called(r, 'apply').length, 0);
+});
+
+test('apply applies a plan that changes only outputs, without either flag', () => {
+  const { run } = setup();
+  const r = run(['apply'], { STUB_PLAN_JSON: fixture('plan-outputs.json') });
+  assert.equal(r.status, 0, r.out);
+  assert.match(r.stdout, /the plan changes only outputs: d1_database_id$/m);
+  assert.equal(called(r, 'apply').length, 1);
 });
 
 test('apply --confirmed --delete-confirmed applies a replace', () => {
