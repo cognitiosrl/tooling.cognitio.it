@@ -31,7 +31,8 @@ case "$1" in -chdir=*) cd "\${1#-chdir=}" || exit 1; shift ;; esac
   for v in AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_ENDPOINT_URL_S3 TF_IN_AUTOMATION \\
            TF_VAR_account_id TF_VAR_zone_ids TF_VAR_access_idp_id TF_VAR_access_allowed_emails \\
            TF_VAR_admin_service_token_id TF_VAR_state_passphrase \\
-           TF_DATA_DIR TF_WORKSPACE TF_CLI_ARGS TF_CLI_ARGS_init TF_CLI_ARGS_plan; do
+           TF_DATA_DIR TF_WORKSPACE TF_CLI_ARGS TF_CLI_ARGS_init TF_CLI_ARGS_plan \\
+           TF_VAR_registry_hostname TF_ENCRYPTION; do
     printf 'ENV\\t%s=%s\\n' "$v" "\${!v-<unset>}"
   done
   if [ -e terraform.tfstate ]; then printf 'STATE\\tmode=%s\\n' "$(stat -c %a terraform.tfstate)"; fi
@@ -578,6 +579,24 @@ test('migrate-state exits 1 when the bucket\'s state lists no resource after the
   assert.equal(r.status, 1);
   assert.equal(migrations(r).length, 1);
   assert.ok(r.stderr.includes(`bucket ${BUCKET}, key ${KEY} lists no resource after the migration; nothing was migrated`), r.stderr);
+});
+
+test('a stray TF_VAR_ value and TF_ENCRYPTION never reach tofu; the runner\'s own TF_VAR_ values do', () => {
+  const stray = { TF_VAR_registry_hostname: 'elsewhere.example.test', TF_ENCRYPTION: 'key_provider "pbkdf2" "other" {}', TF_VAR_account_id: 'stray-account' };
+  for (const args of [['plan'], ['migrate-state', 'plain.tfstate']]) {
+    const { dir, run } = setup();
+    plainState(dir);
+    const r = run(args, stray, { cwd: dir });
+    assert.equal(r.status, 0, r.out);
+    const values = (name) => r.lines.filter(([k, v]) => k === 'ENV' && v.startsWith(`${name}=`)).map(([, v]) => v.slice(name.length + 1));
+    for (const name of ['TF_VAR_registry_hostname', 'TF_ENCRYPTION']) {
+      assert.equal(values(name).length, r.calls.length, `${args[0]}: ${name}`);
+      assert.deepEqual([...new Set(values(name))], ['<unset>'], `${args[0]}: ${name}`);
+    }
+    assert.deepEqual([...new Set(values('TF_VAR_account_id'))], [ACCOUNT_ID], args[0]);
+    assert.deepEqual([...new Set(values('TF_VAR_state_passphrase'))], [PASSPHRASE], args[0]);
+    if (args[0] === 'plan') assert.deepEqual([...new Set(values('TF_VAR_access_idp_id'))], ['idp-made-up'], args[0]);
+  }
 });
 
 test('OpenTofu settings in the environment never reach tofu', () => {

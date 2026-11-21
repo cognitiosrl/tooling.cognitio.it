@@ -45,10 +45,13 @@ set -euo pipefail
 
 # OpenTofu settings a shell may carry are dropped, so a run reads only the inputs above: a
 # data directory (TF_DATA_DIR) shared by migrate-state's two copies would record the backend
-# for both, a workspace (TF_WORKSPACE) would select another state, and TF_CLI_ARGS and
-# TF_CLI_ARGS_<command> would add arguments to the commands below.
-unset TF_DATA_DIR TF_WORKSPACE
-while IFS= read -r name; do unset "$name"; done < <(compgen -v TF_CLI_ARGS || true)
+# for both, a workspace (TF_WORKSPACE) would select another state, TF_CLI_ARGS and
+# TF_CLI_ARGS_<command> would add arguments to the commands below, TF_ENCRYPTION would add
+# encryption config, and a TF_VAR_<name> would override a committed default; the only TF_VAR_
+# values OpenTofu sees are the ones this script exports from the inputs.
+# TF_CLI_CONFIG_FILE stays: the lockfile's checksums bound any provider source; a plugin cache stays usable.
+unset TF_DATA_DIR TF_WORKSPACE TF_ENCRYPTION
+while IFS= read -r name; do unset "$name"; done < <(compgen -v TF_CLI_ARGS || true; compgen -v TF_VAR_ || true)
 
 # The state bucket's R2 endpoint for the default jurisdiction; the eu
 # jurisdiction uses https://$CLOUDFLARE_ACCOUNT_ID.eu.r2.cloudflarestorage.com.
