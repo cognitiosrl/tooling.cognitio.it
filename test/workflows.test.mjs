@@ -173,9 +173,26 @@ test("the deploys carry a message and an output file, in order", () => {
   const registry = named(deploy, "Deploy the registry").text;
   assert.match(registry, /pnpm exec wrangler deploy --config \.\.\/workers\/registry\.wrangler\.jsonc/);
   assert.match(registry, /working-directory: serverless-registry/);
-  const install = named(deploy, "Install the registry's dependencies").text;
-  assert.match(install, /pnpm install --frozen-lockfile/);
-  assert.doesNotMatch(install, /CLOUDFLARE_API_TOKEN/);
+});
+
+test("the dependency installs run no install script and hold no credential", () => {
+  const installs = [
+    [deploy, "Install the install's dependencies", /^ {8}run: npm ci --ignore-scripts$/m],
+    [plan, "Install the install's dependencies", /^ {8}run: npm ci --ignore-scripts$/m],
+    [deploy, "Install the registry's dependencies", /^ {8}run: pnpm install --frozen-lockfile --ignore-scripts$/m],
+  ];
+  for (const [workflow, name, command] of installs) {
+    const step = named(workflow, name);
+    assert.match(code(step), command, `${workflow.file}: ${name}`);
+    assert.doesNotMatch(step.text, /secrets\.|CLOUDFLARE|env:/, `${workflow.file}: ${name}`);
+  }
+  for (const workflow of both) {
+    for (const step of workflow.steps) {
+      for (const line of code(step).split("\n").filter((l) => /\b(npm (ci|install|i)|pnpm (install|i|add))\b/.test(l))) {
+        assert.match(line, /--ignore-scripts/, `${workflow.file}: ${step.name}`);
+      }
+    }
+  }
 });
 
 test("a plan_only run stops after the plan", () => {

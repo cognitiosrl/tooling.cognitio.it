@@ -84,8 +84,10 @@ jobs:
         with:
           node-version-file: .nvmrc
 
+      # No dependency's install script runs: one could write to $GITHUB_ENV or $GITHUB_PATH, which
+      # every later step reads, and the tests need none.
       - name: Install the install's dependencies
-        run: npm ci
+        run: npm ci --ignore-scripts
 
       - name: Test cognitio-tooling
         if: ${{ env.WITHOUT_SECRETS != 'true' }}

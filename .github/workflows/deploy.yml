@@ -104,8 +104,10 @@ jobs:
         with:
           node-version-file: .nvmrc
 
+      # No dependency's install script runs: one could write to $GITHUB_ENV or $GITHUB_PATH, which
+      # every later step reads, and Wrangler needs none.
       - name: Install the install's dependencies
-        run: npm ci
+        run: npm ci --ignore-scripts
 
       - name: Test cognitio-tooling
         working-directory: cognitio-tooling
@@ -232,10 +234,12 @@ jobs:
           package_json_file: serverless-registry/package.json
           run_install: false
 
+      # No install script runs here either, the fork's own included: the registry bundles and
+      # deploys without one.
       - name: Install the registry's dependencies
         if: ${{ inputs.plan_only != true }}
         working-directory: serverless-registry
-        run: pnpm install --frozen-lockfile
+        run: pnpm install --frozen-lockfile --ignore-scripts
 
       - name: Deploy the registry
         if: ${{ inputs.plan_only != true }}
