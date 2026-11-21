@@ -62,6 +62,7 @@ const STUB_CURL = `#!/usr/bin/env bash
 header="$(cat)"
 url=""
 for a in "$@"; do case "$a" in https://*) url="$a" ;; esac; done
+printf 'FIRSTARG\\t%s\\n' "$1" >>"$STUB_LOG"
 printf 'ARGV\\t%s\\nHEADER\\t%s\\nURL\\t%s\\n' "$*" "$header" "$url" >>"$STUB_LOG"
 case "$url" in
   */accounts/*/tokens/verify)
@@ -232,6 +233,8 @@ test('when both tokens/verify endpoints fail, each failure is printed', () => {
   assert.match(r.stderr, /CLOUDFLARE_API_TOKEN is not verified by either tokens\/verify endpoint/);
   assert.ok(!r.out.includes(TOKEN));
   assert.equal(r.calls.length, 0);
+  const first = r.lines.filter(([k]) => k === 'FIRSTARG').map(([, v]) => v);
+  assert.deepEqual(first, ['-q', '-q']);
 });
 
 test('a token neither endpoint verifies exits 1 before any tofu call', () => {

@@ -182,10 +182,10 @@ WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
 
 # The token travels to curl on stdin, never in an argument list. curl's own error text (it
-# never contains a request header) goes to $1 and is printed only when both endpoints fail.
+# never contains a request header: -q skips ~/.curlrc, so no verbose setting adds one) goes to $1 and is printed only when both endpoints fail.
 verify_token_id() {
   printf 'Authorization: Bearer %s\n' "$CLOUDFLARE_API_TOKEN" |
-    curl --silent --show-error --fail --max-time 30 --header @- "$2" 2>"$1" |
+    curl -q --silent --show-error --fail --max-time 30 --header @- "$2" 2>"$1" |
     jq -er '.result.id | select(type == "string" and . != "")' 2>/dev/null
 }
 
