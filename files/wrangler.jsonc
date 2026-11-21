@@ -3,9 +3,9 @@
   // tooling registry's R2 bucket to a consumer allowed that publication. See
   // ./worker.js for the request rules and ../README.md for the operator's steps.
   //
-  // No secrets live here. CONSUMERS (the consumer list) and the optional
-  // READONLY_USERNAME/READONLY_PASSWORD (the registry's read-only pair, allowed
-  // `tandemsdd`) are Worker secrets, set with `wrangler secret put`. The routes
+  // No secrets live here. CONSUMERS, the consumer list (the registry's read-only pair
+  // among them, allowed `tandemsdd`), is the Worker's one secret, put by
+  // `node consumers.mjs push`. The routes
   // (<host>/<publication>/*, on each host) are owned by OpenTofu in ../iac/, not by
   // this file, so no routes are declared here.
   "name": "tandem-tooling-files",

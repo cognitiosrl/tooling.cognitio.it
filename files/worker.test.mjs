@@ -39,10 +39,14 @@ const ANY_HOST = Object.keys(ANY_PUBLICATION_HOSTS)[0];
 const COGNITIO = { name: "cognitio", username: "cognitio", password: "c0g:n+t/o" };
 const AGGREGA = { name: "aggrega", username: "aggrega", password: "aggr:ega" };
 const CUSTOMER = { name: "acme", username: "acme-ci", password: "acme-secret" };
+// The registry's read-only pair, an ordinary consumer allowed tandemsdd alone.
+const RO_USER = "reader";
+const RO_PASS = "s3cr+t/with:colon";
 const CONSUMERS = JSON.stringify([
   { name: COGNITIO.name, username: COGNITIO.username, passwordSha256: hex(COGNITIO.password), publications: ["tandemsdd", "l10n"] },
   { name: AGGREGA.name, username: AGGREGA.username, passwordSha256: hex(AGGREGA.password), publications: ["tandemsdd", "l10n"] },
   { name: CUSTOMER.name, username: CUSTOMER.username, passwordSha256: hex(CUSTOMER.password), publications: ["l10n"] },
+  { name: "readonly", username: RO_USER, passwordSha256: hex(RO_PASS), publications: ["tandemsdd"] },
 ]);
 
 // A consumer allowed every publication, as the deployed consumers are.
@@ -51,10 +55,6 @@ const WITH_ALL = JSON.stringify([
   ...JSON.parse(CONSUMERS),
   { name: AGGREGA_ALL.name, username: AGGREGA_ALL.username, passwordSha256: hex(AGGREGA_ALL.password), publications: ["*"] },
 ]);
-
-// The registry's read-only pair, which stays a consumer allowed tandemsdd alone.
-const RO_USER = "reader";
-const RO_PASS = "s3cr+t/with:colon";
 
 function bucket(objects) {
   const asked = [];
@@ -74,8 +74,6 @@ function env(objects = {}, overrides = {}) {
     PUBLICATIONS,
     ANY_PUBLICATION_HOSTS,
     CONSUMERS,
-    READONLY_USERNAME: RO_USER,
-    READONLY_PASSWORD: RO_PASS,
     ...overrides,
   };
 }
@@ -330,14 +328,14 @@ test("per consumer: each is served exactly the publications it is allowed", asyn
     [AGGREGA, "/tandemsdd/marketplace.json", 200],
     [AGGREGA, "/l10n/latest.json", 200],
     [CUSTOMER, "/l10n/latest.json", 200],
-    [CUSTOMER, "/tandemsdd/marketplace.json", 403],
-    [CUSTOMER, "/tandemsdd/archives/tandem-1.2.0.zip", 403],
+    [CUSTOMER, "/tandemsdd/marketplace.json", 404],
+    [CUSTOMER, "/tandemsdd/archives/tandem-1.2.0.zip", 404],
   ];
   for (const [consumer, path, status] of cells) {
     const e = env(STORE);
     const res = await worker.fetch(req(path, { auth: as(consumer) }), e);
     assert.equal(res.status, status, `${consumer.name} ${path}`);
-    if (status === 403) assert.deepEqual(e.FILES.asked, [], `${consumer.name} ${path}: nothing is read`);
+    if (status === 404) assert.deepEqual(e.FILES.asked, [], `${consumer.name} ${path}: nothing is read`);
   }
 });
 
@@ -355,7 +353,7 @@ test('a consumer allowed "*" is served every publication, one added after its en
   }
   const e = env(store, { CONSUMERS: consumers, PUBLICATIONS: publications });
   const other = await worker.fetch(req("/later/archives/later-1.0.0.tgz", { auth: as(CUSTOMER), host: ROUTED_HOST }), e);
-  assert.equal(other.status, 403, "a consumer that lists publications is still held to them");
+  assert.equal(other.status, 404, "a consumer that lists publications is still held to them");
   assert.deepEqual(e.FILES.asked, []);
 });
 
@@ -381,24 +379,23 @@ test('"*" allows no publication the routed host does not configure', async () =>
   assert.deepEqual(e.FILES.asked, []);
 });
 
-test("the registry's read-only pair is a consumer allowed tandemsdd alone", async () => {
+test("the registry's read-only pair is an ordinary consumer, a CONSUMERS entry allowed tandemsdd alone", async () => {
   const ok = await worker.fetch(req("/tandemsdd/marketplace.json", { auth: READONLY }), env(STORE));
   assert.equal(ok.status, 200);
   const e = env(STORE);
   const no = await worker.fetch(req("/l10n/latest.json", { auth: READONLY }), e);
-  assert.equal(no.status, 403);
+  assert.equal(no.status, 404);
   assert.deepEqual(e.FILES.asked, []);
 });
 
-test("the read-only pair alone, with no CONSUMERS, still serves tandemsdd", async () => {
-  const res = await worker.fetch(req("/tandemsdd/marketplace.json", { auth: READONLY }), env(STORE, { CONSUMERS: undefined }));
-  assert.equal(res.status, 200);
-});
-
-test("CONSUMERS alone, with no read-only pair, serves its consumers and refuses the pair", async () => {
-  const e = { READONLY_USERNAME: undefined, READONLY_PASSWORD: undefined };
-  assert.equal((await worker.fetch(req("/l10n/latest.json", { auth: as(CUSTOMER) }), env(STORE, e))).status, 200);
-  assert.equal((await worker.fetch(req("/tandemsdd/marketplace.json", { auth: READONLY }), env(STORE, e))).status, 401);
+test("READONLY_USERNAME and READONLY_PASSWORD are not read: a pair only they hold is refused 401", async () => {
+  const kept = { READONLY_USERNAME: "kept-reader", READONLY_PASSWORD: "kept-pass" };
+  const e = env(STORE, kept);
+  const res = await worker.fetch(req("/tandemsdd/marketplace.json", { auth: basic("kept-reader", "kept-pass") }), e);
+  assert.equal(res.status, 401);
+  assert.deepEqual(e.FILES.asked, []);
+  const listed = await worker.fetch(req("/tandemsdd/marketplace.json", { auth: READONLY }), env(STORE, kept));
+  assert.equal(listed.status, 200, "the CONSUMERS entry still serves beside them");
 });
 
 test("a revoked consumer is refused with 401", async () => {
@@ -427,7 +424,7 @@ test("401 before any lookup: no credential, wrong halves, another consumer's mix
   }
 });
 
-test("401 comes before 403, 405 and 404", async () => {
+test("401 comes before 405 and 404", async () => {
   for (const [path, method] of [
     ["/tandemsdd/marketplace.json", "POST"],
     ["/nowhere/x.json", "GET"],
@@ -438,16 +435,22 @@ test("401 comes before 403, 405 and 404", async () => {
   }
 });
 
-test("403 comes before 405 and 404, and reads nothing", async () => {
+test("a publication the consumer is not allowed answers 404 as no object does, before 405, and reads nothing", async () => {
+  const absent = await worker.fetch(req("/tandemsdd/archives/tandem-9.9.9.zip"), env(STORE));
+  assert.equal(absent.status, 404);
+  const body = await absent.text();
   for (const [path, method] of [
     ["/tandemsdd/marketplace.json", "PUT"],
+    ["/tandemsdd/marketplace.json", "GET"],
     ["/tandemsdd/missing.json", "GET"],
     ["/tandemsdd/%2e%2e/x", "GET"],
     ["/nowhere/x.json", "GET"],
   ]) {
     const e = env(STORE);
     const res = await worker.fetch(req(path, { method, auth: as(CUSTOMER) }), e);
-    assert.equal(res.status, 403, `${method} ${path}`);
+    assert.equal(res.status, 404, `${method} ${path}`);
+    assert.equal(await res.text(), body, `${method} ${path}: the body of a file that does not exist`);
+    assert.deepEqual([...res.headers.keys()].sort(), [...absent.headers.keys()].sort(), `${method} ${path}: its headers too`);
     assert.deepEqual(e.FILES.asked, []);
   }
 });
@@ -484,11 +487,11 @@ test("404 without a lookup: traversal, encoded bytes, hidden or empty segments",
 test("a dot-dot segment the URL parser resolves is judged where it lands", async () => {
   // "..", and "%2e%2e" with it, is resolved by the URL parser before the Worker sees
   // the path, so /l10n/../tandemsdd/x is a tandemsdd request: the customer, allowed
-  // l10n alone, gets 403, and nothing is read.
+  // l10n alone, gets 404, and nothing is read.
   for (const path of ["/l10n/../tandemsdd/marketplace.json", "/l10n/%2e%2e/tandemsdd/marketplace.json"]) {
     const e = env(STORE);
     const res = await worker.fetch(req(path, { auth: as(CUSTOMER) }), e);
-    assert.equal(res.status, 403, path);
+    assert.equal(res.status, 404, path);
     assert.deepEqual(e.FILES.asked, [], path);
   }
 });
@@ -516,16 +519,16 @@ test("500 and no lookup when the configuration is missing or invalid", async () 
     ["no PUBLICATIONS", { PUBLICATIONS: undefined }],
     ["invalid PUBLICATIONS", { PUBLICATIONS: "{" }],
     ["invalid ANY_PUBLICATION_HOSTS", { ANY_PUBLICATION_HOSTS: { localhost: {} } }],
-    ["no consumer at all", { CONSUMERS: undefined, READONLY_USERNAME: undefined, READONLY_PASSWORD: undefined }],
-    ["half the read-only pair", { READONLY_PASSWORD: undefined }],
+    ["no consumer at all", { CONSUMERS: undefined }],
+    ["no CONSUMERS, the READONLY_ secrets alone", { CONSUMERS: undefined, READONLY_USERNAME: RO_USER, READONLY_PASSWORD: RO_PASS }],
     ["CONSUMERS not JSON", { CONSUMERS: "[" }],
     ["CONSUMERS not a list", { CONSUMERS: "{}" }],
     ["a consumer without a hash", { CONSUMERS: JSON.stringify([{ name: "a", username: "a", publications: [] }]) }],
     ["a short hash", { CONSUMERS: JSON.stringify([{ name: "a", username: "a", passwordSha256: "abc", publications: [] }]) }],
     ["a username with a colon", { CONSUMERS: JSON.stringify([{ name: "a", username: "a:b", passwordSha256: hex("p"), publications: [] }]) }],
     ["two consumers, one username", { CONSUMERS: JSON.stringify(dup) }],
-    ["a consumer reusing the read-only username", {
-      CONSUMERS: JSON.stringify([{ name: "a", username: RO_USER, passwordSha256: hex("p"), publications: [] }]),
+    ["the read-only pair's username listed twice", {
+      CONSUMERS: JSON.stringify([...JSON.parse(CONSUMERS), { name: "a", username: RO_USER, passwordSha256: hex("p"), publications: [] }]),
     }],
   ]) {
     const e = env(STORE);

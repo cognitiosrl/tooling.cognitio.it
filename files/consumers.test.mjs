@@ -57,7 +57,7 @@ test("validate: with a host serving any publication, any publication name is con
 });
 
 test("the JSON the file stands for is served by the Worker as written", async () => {
-  const json = consumersJson(parseFile(`all:${hashPassword("p1")}:*\nl10n-only:${hashPassword("p2")}:l10n\n`));
+  const json = consumersJson(parseFile(`all:${hashPassword("p1")}:*\nl10n-only:${hashPassword("p2")}:l10n\nreader:${hashPassword("p3")}:tandemsdd\n`));
   const vars = readWranglerConfig(new URL("./wrangler.jsonc", import.meta.url)).vars;
   const env = {
     FILES: { get: async (key) => ({ body: key, httpEtag: '"e"' }) },
@@ -71,7 +71,9 @@ test("the JSON the file stands for is served by the Worker as written", async ()
   assert.equal((await get("tooling.example", "/tandemsdd/marketplace.json", "all", "p1")).status, 200);
   assert.equal((await get(anyHost, "/l10n/archives/l10n-1.1.0.tgz", "all", "p1")).status, 200);
   assert.equal((await get(anyHost, "/l10n/archives/l10n-1.1.0.tgz", "l10n-only", "p2")).status, 200);
-  assert.equal((await get("tooling.example", "/tandemsdd/marketplace.json", "l10n-only", "p2")).status, 403);
+  assert.equal((await get("tooling.example", "/tandemsdd/marketplace.json", "l10n-only", "p2")).status, 404);
+  assert.equal((await get("tooling.example", "/tandemsdd/marketplace.json", "reader", "p3")).status, 200);
+  assert.equal((await get(anyHost, "/l10n/archives/l10n-1.1.0.tgz", "reader", "p3")).status, 404);
 });
 
 test("the commands, on a file of their own", () => {

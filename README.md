@@ -45,14 +45,16 @@ Every credential is a Worker secret, never in the repository or in OpenTofu stat
 - **The registry's read-only pair**: `READONLY_USERNAME` and `READONLY_PASSWORD` on the registry Worker, which every
   machine building a TANDEM container logs in with. The registry has this one read pair and no per-consumer scoping.
 - **The files Worker's consumers**: the secret `CONSUMERS` on the files Worker, `tandem-tooling-files`, a JSON list
-  with one entry per consumer. A request is served only when its Basic credential is a consumer's and that consumer
-  lists the publication. The list is the same on both hosts.
+  with one entry per consumer and the Worker's one secret. A request is served only when its Basic credential is a
+  consumer's and that consumer lists the publication; a publication the consumer is not allowed answers 404, as a
+  file that does not exist does, and nothing is read. The list is the same on both hosts.
 
   ```json
   [
     {"name": "cognitio", "username": "cognitio", "passwordSha256": "<hex>", "publications": ["tandemsdd", "l10n"]},
     {"name": "aggrega",  "username": "aggrega",  "passwordSha256": "<hex>", "publications": ["tandemsdd", "l10n"]},
-    {"name": "acme",     "username": "acme",     "passwordSha256": "<hex>", "publications": ["l10n"]}
+    {"name": "acme",     "username": "acme",     "passwordSha256": "<hex>", "publications": ["l10n"]},
+    {"name": "<read-only user>", "username": "<read-only user>", "passwordSha256": "<hex>", "publications": ["tandemsdd"]}
   ]
   ```
 
@@ -75,13 +77,25 @@ Every credential is a Worker secret, never in the repository or in OpenTofu stat
 
   Every change is checked by the Worker's own parser, and against the publications `files/wrangler.jsonc`
   configures, whichever host serves them, before the file is written; `--help` states the rest.
-- **The read-only pair on the files Worker**: the files Worker also holds `READONLY_USERNAME` and `READONLY_PASSWORD`,
-  set to the registry's read-only pair. That pair is one more consumer, allowed `tandemsdd` and nothing else. A machine
-  set up as under "Machine log-in" below reads the plugin marketplace with that pair, so it stays set.
+- **The read-only pair among the files Worker's consumers**: the registry's read-only pair is an ordinary consumer in
+  `consumers.htpasswd`, allowed `tandemsdd` and nothing else, added with `node consumers.mjs add <read-only user>
+  tandemsdd` and the registry's read-only password typed at the prompt. The files Worker holds no `READONLY_*`
+  secret; the registry keeps its own pair, which `docker login` checks. A machine set up as under "Machine log-in"
+  below reads the plugin marketplace with that pair, so its entry stays in the file.
 
 The registry's two usernames must differ: the registry looks a credential up by username and takes the first match,
-which is the push pair. No consumer may reuse the read-only username. Neither registry password may contain `,` or `|`,
-which the devcontainer CLI's credential variable cannot carry.
+which is the push pair. A new password for the read-only pair goes to three places, or the pair answers 401 on one
+host and 200 on the other:
+
+- the registry: `wrangler secret put READONLY_PASSWORD` on the registry Worker;
+- the files Worker: `node consumers.mjs passwd <read-only user>`, then `push`;
+- the pair's customer on the serving Worker, whose imported credential holds the old password's hash. The
+  `cognitio-tooling` command line sets no credential to a given password (`credential reset` prints a generated
+  secret, which the registry would not know), so the customer is imported again:
+  `cognitio-tooling customer remove <read-only user>`, `cognitio-tooling import-consumers consumers.htpasswd`
+  (it creates only the missing login), then `cognitio-tooling credential expires <read-only user> imported never`.
+
+Neither registry password may contain `,` or `|`, which the devcontainer CLI's credential variable cannot carry.
 
 **For `tandemsdd`, the read-only pair stays the practical credential.** The plugin's marketplace helper sends the first
 Docker login for the host it finds — the container's own Docker config, then `~/.docker-tandem` — and `docker login`

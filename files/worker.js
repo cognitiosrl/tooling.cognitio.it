@@ -25,7 +25,9 @@
 //   500  the Worker is not configured: no bucket binding, no valid PUBLICATIONS or
 //        ANY_PUBLICATION_HOSTS, or no valid consumer list. Nothing is read.
 //   401  no Basic credential, or one matching no consumer. Nothing is looked up.
-//   403  the credential's consumer is not allowed the publication the path names.
+//   404  the credential's consumer is not allowed the publication the path names: the
+//        answer a file that does not exist gets, the same body and headers, and nothing
+//        is read, so a consumer learns nothing of the publications it is not allowed.
 //   405  a method other than GET.
 //   404  a publication not configured, a path outside the rules below, or no object.
 //   200  the object.
@@ -42,15 +44,12 @@
 //
 // passwordSha256 is the SHA-256 of the password's UTF-8 bytes, so the secret holds no
 // password. A consumer whose publications hold "*" is allowed every publication,
-// including one added after its entry was written. The secrets READONLY_USERNAME and READONLY_PASSWORD, when both are set,
-// add one more consumer, named "readonly", allowed `tandemsdd` alone: the tooling
-// registry's read-only pair, which every machine pulling the TANDEM Features already
-// logs in with. Either source may be absent, not both; two consumers with one username
-// are a misconfiguration.
+// including one added after its entry was written. CONSUMERS is the only source of
+// consumers: the tooling registry's read-only pair, which every machine pulling the
+// TANDEM Features logs in with, is an ordinary entry allowed `tandemsdd`. An absent or
+// empty list, and two consumers with one username, are a misconfiguration.
 
 const REALM = "tooling files";
-const LEGACY_CONSUMER = "readonly";
-const LEGACY_PUBLICATIONS = ["tandemsdd"];
 const ALL_PUBLICATIONS = "*";
 const PUBLICATION_NAME = /^[a-z0-9][a-z0-9-]*$/;
 const HOST_NAME = /^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$/;
@@ -330,10 +329,10 @@ function sameDigest(x, y) {
 }
 
 /**
- * The consumers the Worker's secrets declare, each with the digests of its username and
+ * The consumers the CONSUMERS secret declares, each with the digests of its username and
  * password, or `{error}` when they are not a valid configuration.
  *
- * @param {{CONSUMERS?: string, READONLY_USERNAME?: string, READONLY_PASSWORD?: string}} env
+ * @param {{CONSUMERS?: string}} env
  * @returns {Promise<{consumers: {name: string, user: Uint8Array, pass: Uint8Array, publications: string[]}[]} | {error: string}>}
  */
 export async function consumersFrom(env) {
@@ -368,18 +367,7 @@ export async function consumersFrom(env) {
       });
     }
   }
-  const hasUser = Boolean(env.READONLY_USERNAME);
-  const hasPass = Boolean(env.READONLY_PASSWORD);
-  if (hasUser !== hasPass) return configError("READONLY_USERNAME and READONLY_PASSWORD are set together or not at all");
-  if (hasUser) {
-    declared.push({
-      name: LEGACY_CONSUMER,
-      username: env.READONLY_USERNAME,
-      pass: await sha256(env.READONLY_PASSWORD),
-      publications: [...LEGACY_PUBLICATIONS],
-    });
-  }
-  if (declared.length === 0) return configError("no consumer: set CONSUMERS, or both READONLY_ secrets");
+  if (declared.length === 0) return configError("no consumer: set CONSUMERS");
   const seen = new Set();
   for (const c of declared) {
     if (seen.has(c.username)) return configError(`two consumers share the username of "${c.name}"`);
@@ -429,10 +417,13 @@ function refusal(status, message, headers = {}) {
   });
 }
 
+// The one 404: a file that does not exist, and a publication the consumer is not allowed.
+const notFound = () => refusal(404, "Not found.");
+
 export default {
   /**
    * @param {Request} request
-   * @param {{FILES?: R2Bucket, PUBLICATIONS?: unknown, ANY_PUBLICATION_HOSTS?: unknown, CONSUMERS?: string, READONLY_USERNAME?: string, READONLY_PASSWORD?: string}} env
+   * @param {{FILES?: R2Bucket, PUBLICATIONS?: unknown, ANY_PUBLICATION_HOSTS?: unknown, CONSUMERS?: string}} env
    */
   async fetch(request, env) {
     const config = env.FILES ? servingFrom(env) : configError("no FILES bucket binding");
@@ -451,18 +442,18 @@ export default {
     const url = new URL(request.url);
     const { publication, path } = splitPath(url.pathname);
     if (!allows(consumer, publication)) {
-      return refusal(403, "This credential is not allowed this publication.");
+      return notFound();
     }
     if (request.method !== "GET") {
       return refusal(405, "Only GET is served.", { allow: "GET" });
     }
     const target = publicationFor(config, url.hostname, publication);
     if (!target || path === null) {
-      return refusal(404, "Not found.");
+      return notFound();
     }
     const object = await env.FILES.get(objectKey(target, path));
     if (!object) {
-      return refusal(404, "Not found.");
+      return notFound();
     }
     return new Response(object.body, {
       status: 200,
