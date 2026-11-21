@@ -35,8 +35,15 @@ case "$1" in -chdir=*) cd "\${1#-chdir=}" || exit 1; shift ;; esac
   if [ -e encryption.tf ]; then printf 'ENC\\t%s\\n' "$(base64 -w0 encryption.tf)"; fi
 } >>"$STUB_LOG"
 case "$1" in
-  init) case " $* " in *' -migrate-state '*) touch terraform.tfstate.backup ;; esac
+  init) case " $* " in *' -migrate-state '*)
+          touch terraform.tfstate.backup
+          [ -z "\${STUB_MIGRATE_FAIL:-}" ] || { echo "init: migration failed" >&2; exit 1; } ;;
+        esac
         [ -z "\${STUB_INIT_FAIL:-}" ] || { echo "init: no such bucket" >&2; exit 1; } ;;
+  state) if [ "$2" = list ]; then
+           [ -z "\${STUB_STATE_LIST_ERROR:-}" ] || { printf 'Error: %s\\n' "$STUB_STATE_LIST_ERROR" >&2; exit 1; }
+           [ -z "\${STUB_STATE_LIST:-}" ] || printf '%s\\n' "$STUB_STATE_LIST"
+         fi ;;
   plan) for a in "$@"; do case "$a" in -out=*) echo plan >"\${a#-out=}" ;; esac; done ;;
   show) cat "$STUB_PLAN_JSON" ;;
   output) cat "$STUB_OUTPUT_JSON" ;;
@@ -456,6 +463,59 @@ test('migrate-state migrates in a copy of iac/ whose encryption config also read
   assert.ok(!existsSync(m.cwd), 'the copy is removed');
 });
 
+test('migrate-state first lists the bucket\'s state with the committed encryption config, in a copy of its own', () => {
+  const { dir, run } = setup();
+  const iac = join(dir, 'iac');
+  const r = run(['migrate-state', plainState(dir)]);
+  assert.equal(r.status, 0, r.out);
+  assert.equal(r.records.length, 3, r.calls.join('\n'));
+  const [check, list, migration] = r.records;
+  assert.match(check.call, /^init /);
+  assert.doesNotMatch(check.call, /-migrate-state/);
+  assert.ok(check.call.includes(`-backend-config=bucket=${BUCKET}`) && check.call.includes(`-backend-config=key=${KEY}`));
+  assert.match(list.call, /^state list\b/);
+  assert.equal(list.cwd, check.cwd);
+  assert.ok(check.cwd !== iac && !check.cwd.startsWith(`${iac}/`), check.cwd);
+  assert.notEqual(check.cwd, migration.cwd);
+  assert.equal(check.enc, readFileSync(join(iacDir, 'encryption.tf'), 'utf8'));
+  assert.equal(check.state, undefined, 'the check\'s copy holds no plain state');
+  assert.match(migration.call, /-migrate-state/);
+});
+
+test('migrate-state refuses a bucket whose state holds a resource, naming the bucket and key', () => {
+  const { dir, run } = setup();
+  const r = run(['migrate-state', plainState(dir)], { STUB_STATE_LIST: 'cloudflare_d1_database.tooling' });
+  assert.equal(r.status, 2);
+  assert.match(r.stderr, /^ {2}cloudflare_d1_database\.tooling$/m);
+  assert.match(r.stderr, new RegExp(`bucket ${BUCKET}, key ${KEY.replaceAll('.', '\\.')} already holds a state`));
+  assert.equal(migrations(r).length, 0);
+});
+
+test('migrate-state proceeds when the bucket holds no state under the key', () => {
+  const { dir, run } = setup();
+  const r = run(['migrate-state', plainState(dir)], { STUB_STATE_LIST_ERROR: 'No state file was found' });
+  assert.equal(r.status, 0, r.out);
+  assert.equal(migrations(r).length, 1);
+});
+
+test('migrate-state refuses a bucket whose state cannot be listed, naming the bucket and key', () => {
+  const { dir, run } = setup();
+  const r = run(['migrate-state', plainState(dir)], { STUB_STATE_LIST_ERROR: 'encountered unencrypted payload without unencrypted method configured' });
+  assert.equal(r.status, 1);
+  assert.match(r.stderr, /Error: encountered unencrypted payload/);
+  assert.ok(r.stderr.includes(`tofu state list failed for bucket ${BUCKET}, key ${KEY}`), r.stderr);
+  assert.equal(migrations(r).length, 0);
+});
+
+test('migrate-state stops when the check\'s init fails', () => {
+  const { dir, run } = setup();
+  const r = run(['migrate-state', plainState(dir)], { STUB_INIT_FAIL: '1' });
+  assert.equal(r.status, 1);
+  assert.ok(r.stderr.includes(`tofu init failed for bucket ${BUCKET}, key ${KEY}`), r.stderr);
+  assert.equal(called(r, 'state').length, 0);
+  assert.equal(migrations(r).length, 0);
+});
+
 test('migrate-state needs only its four inputs and passes the bucket and key', () => {
   const { dir, run } = setup();
   const env = Object.fromEntries(Object.entries(inputs()).filter(([k]) => migrateInputs.includes(k)));
@@ -509,7 +569,7 @@ test('the temporary directory is removed on exit, a failed migration\'s plain co
     [['apply'], { STUB_PLAN_JSON: fixture('plan-create.json') }, 1],
     [['apply', '--confirmed'], { STUB_PLAN_JSON: fixture('plan-update.json') }, 0],
     [['migrate-state', plainState(dir)], {}, 0],
-    [['migrate-state', plainState(dir)], { STUB_INIT_FAIL: '1' }, 1],
+    [['migrate-state', plainState(dir)], { STUB_MIGRATE_FAIL: '1' }, 1],
   ]) {
     const r = run(args, { TMPDIR: tmp, ...env });
     assert.equal(r.status, status, `${args[0]}: ${r.out}`);

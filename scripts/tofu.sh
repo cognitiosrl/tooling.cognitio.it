@@ -19,7 +19,10 @@
 #       encryption.tf is replaced by one that also reads a plain state: the file
 #       is copied in (mode 600) and tofu init -migrate-state -force-copy runs
 #       there. iac/ is never changed; the temporary directory, the copy with
-#       it, is removed on exit.
+#       it, is removed on exit. Before it, tofu state list reads the bucket's
+#       state under the install's key, with iac/encryption.tf, in a second
+#       copy: a state holding any resource, or one that cannot be read, is
+#       refused and nothing is migrated.
 #
 # Inputs come from the environment only:
 #   CLOUDFLARE_API_TOKEN, CLOUDFLARE_ACCOUNT_ID, TOFU_STATE_BUCKET,
@@ -27,9 +30,10 @@
 #   id), ACCESS_IDP_ID, ACCESS_ALLOWED_EMAILS (comma-separated),
 #   ADMIN_SERVICE_TOKEN_ID. migrate-state needs only the first four.
 #
-# Exit status: 2 for usage, missing inputs or a refusal by the environment;
-# 1 for a plan refused by a confirmation gate, a failed init or a token that
-# no tokens/verify endpoint accepts.
+# Exit status: 2 for usage, missing inputs, a refusal by the environment or a
+# bucket that already holds a state with resources; 1 for a plan refused by a
+# confirmation gate, a failed init, a bucket state that cannot be listed or a
+# token that no tokens/verify endpoint accepts.
 set -euo pipefail
 
 # The state bucket's R2 endpoint for the default jurisdiction; the eu
@@ -54,6 +58,12 @@ die() {
   shift
   echo "tofu.sh: $*" >&2
   exit "$status"
+}
+
+# Prints each line of $1 indented, on stderr.
+list() {
+  local address
+  while IFS= read -r address; do printf '  %s\n' "$address" >&2; done <<<"$1"
 }
 
 # A path argument is made absolute before the script changes directory.
@@ -215,6 +225,27 @@ HCL
 }
 
 if [ "$ACTION" = migrate-state ]; then
+  # init -migrate-state -force-copy replaces whatever state the key holds, so a state that
+  # holds any resource is refused first. tofu state list reads it with iac/encryption.tf, in
+  # a copy of iac/ of its own; a state that cannot be read is refused too.
+  check="$WORK/check"
+  copy_iac "$check"
+  tofu -chdir="$check" "${init_args[@]}" ||
+    die 1 "tofu init failed for bucket $TOFU_STATE_BUCKET, key $STATE_KEY"
+  if ! tofu -chdir="$check" state list -no-color >"$WORK/addresses" 2>"$WORK/state-list.err"; then
+    # The one failure that means the key holds no state at all.
+    grep -q 'No state file was found' "$WORK/state-list.err" || {
+      cat "$WORK/state-list.err" >&2
+      die 1 "tofu state list failed for bucket $TOFU_STATE_BUCKET, key $STATE_KEY; nothing was migrated"
+    }
+    : >"$WORK/addresses"
+  fi
+  if [ -s "$WORK/addresses" ]; then
+    echo "tofu.sh: the state already in the bucket holds:" >&2
+    list "$(cat "$WORK/addresses")"
+    die 2 "bucket $TOFU_STATE_BUCKET, key $STATE_KEY already holds a state; migrate-state never replaces one"
+  fi
+
   migration="$WORK/migration"
   copy_iac "$migration"
   migration_encryption >"$migration/encryption.tf"
@@ -267,11 +298,6 @@ changes="$(jq -r '.resource_changes[]?
   | select((.change.actions != ["no-op"] and .change.actions != ["read"]) or (.change.importing != null))
   | .address' "$WORK/plan.json")"
 deletes="$(jq -r '.resource_changes[]? | select(.change.actions | index("delete")) | .address' "$WORK/plan.json")"
-
-list() {
-  local address
-  while IFS= read -r address; do printf '  %s\n' "$address" >&2; done <<<"$1"
-}
 
 if [ -z "$changes" ]; then
   echo "tofu.sh: the plan has no changes; nothing applied"
