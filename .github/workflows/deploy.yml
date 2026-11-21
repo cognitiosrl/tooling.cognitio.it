@@ -283,18 +283,19 @@ jobs:
           set -euo pipefail
           config=../workers/registry.wrangler.jsonc
           wr() { pnpm exec wrangler "$@"; }
-          # A deploy takes the secrets this workflow does not upload from the Worker's latest
-          # version, which is the serving one only when the deployment is that version alone at
-          # 100 %. The two copies of this check are deliberate: a workflow cannot share a step
-          # without a new file.
+          # A deploy keeps the secrets it does not upload from a previous version of the Worker.
+          # This check holds the latest version and the serving one the same, so which of them
+          # that is cannot matter; the test "the two copies of the secrets-inheritance check are
+          # textually identical" keeps the two copies equal. A Worker's first deploy is made by
+          # hand: with no deployment, wrangler stops before this check answers.
           worker=$(sed -n 's/^ *"name": *"\([^"]*\)".*/\1/p' "$config")
-          deployed=$(wr deployments status --json --config "$config" | jq -r '[.versions[] | "\(.version_id) (\(.percentage) %)"] | join(", ")')
-          latest=$(wr versions list --json --config "$config" | jq -r 'sort_by(.metadata.created_on) | last | .id')
+          deployed=$(wr deployments status --json --config "$config" | jq -er 'if (.versions | length > 0) and all(.versions[]; (.version_id | type) == "string" and (.percentage | type) == "number") then [.versions[] | "\(.version_id) (\(.percentage) %)"] | join(", ") else empty end') || { echo "$worker: refusing to deploy: wrangler gave no usable deployment (versions with a version_id and a percentage)." >&2; exit 1; }
+          latest=$(wr versions list --json --config "$config" | jq -er 'if length > 0 and all(.[]; (.id | type) == "string" and (.metadata.created_on | type) == "string") then sort_by(.metadata.created_on) | last | .id else empty end') || { echo "$worker: refusing to deploy: wrangler gave no usable version list (versions with an id and a creation time)." >&2; exit 1; }
           if [ "$deployed" != "$latest (100 %)" ]; then
-            echo "$worker: refusing to deploy. Serving: $deployed. Latest version: $latest. A deploy would take its secrets from the latest version: deploy or re-put the secrets on the serving line first." >&2
+            echo "$worker: refusing to deploy. Serving: $deployed. Latest version: $latest. A deploy keeps its secrets from a previous version, and the latest version is not the only one serving. Put each kept secret on a new version with 'wrangler versions secret put <NAME> --name $worker', then 'wrangler versions deploy <that version>@100% --name $worker'; or, if the latest version's secrets are right, 'wrangler versions deploy $latest@100% --name $worker'." >&2
             exit 1
           fi
-          pnpm exec wrangler deploy --config ../workers/registry.wrangler.jsonc --message "$MESSAGE"
+          pnpm exec wrangler deploy --config "$config" --message "$MESSAGE"
 
       - name: Deploy the files Worker
         if: ${{ inputs.plan_only != true }}
@@ -307,18 +308,19 @@ jobs:
           set -euo pipefail
           config=files/wrangler.jsonc
           wr() { npx wrangler "$@"; }
-          # A deploy takes the secrets this workflow does not upload from the Worker's latest
-          # version, which is the serving one only when the deployment is that version alone at
-          # 100 %. The two copies of this check are deliberate: a workflow cannot share a step
-          # without a new file.
+          # A deploy keeps the secrets it does not upload from a previous version of the Worker.
+          # This check holds the latest version and the serving one the same, so which of them
+          # that is cannot matter; the test "the two copies of the secrets-inheritance check are
+          # textually identical" keeps the two copies equal. A Worker's first deploy is made by
+          # hand: with no deployment, wrangler stops before this check answers.
           worker=$(sed -n 's/^ *"name": *"\([^"]*\)".*/\1/p' "$config")
-          deployed=$(wr deployments status --json --config "$config" | jq -r '[.versions[] | "\(.version_id) (\(.percentage) %)"] | join(", ")')
-          latest=$(wr versions list --json --config "$config" | jq -r 'sort_by(.metadata.created_on) | last | .id')
+          deployed=$(wr deployments status --json --config "$config" | jq -er 'if (.versions | length > 0) and all(.versions[]; (.version_id | type) == "string" and (.percentage | type) == "number") then [.versions[] | "\(.version_id) (\(.percentage) %)"] | join(", ") else empty end') || { echo "$worker: refusing to deploy: wrangler gave no usable deployment (versions with a version_id and a percentage)." >&2; exit 1; }
+          latest=$(wr versions list --json --config "$config" | jq -er 'if length > 0 and all(.[]; (.id | type) == "string" and (.metadata.created_on | type) == "string") then sort_by(.metadata.created_on) | last | .id else empty end') || { echo "$worker: refusing to deploy: wrangler gave no usable version list (versions with an id and a creation time)." >&2; exit 1; }
           if [ "$deployed" != "$latest (100 %)" ]; then
-            echo "$worker: refusing to deploy. Serving: $deployed. Latest version: $latest. A deploy would take its secrets from the latest version: deploy or re-put the secrets on the serving line first." >&2
+            echo "$worker: refusing to deploy. Serving: $deployed. Latest version: $latest. A deploy keeps its secrets from a previous version, and the latest version is not the only one serving. Put each kept secret on a new version with 'wrangler versions secret put <NAME> --name $worker', then 'wrangler versions deploy <that version>@100% --name $worker'; or, if the latest version's secrets are right, 'wrangler versions deploy $latest@100% --name $worker'." >&2
             exit 1
           fi
-          npx wrangler deploy --config files/wrangler.jsonc --message "$MESSAGE"
+          npx wrangler deploy --config "$config" --message "$MESSAGE"
 
       - name: Verify the deployments
         if: ${{ inputs.plan_only != true }}

@@ -4,7 +4,7 @@
 
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, resolve } from "node:path";
 import { test } from "node:test";
@@ -173,7 +173,11 @@ test("the deploys carry a message and an output file, in order", () => {
   assert.match(named(deploy, "Deploy the admin Worker").text, /--secrets-file "\$RUNNER_TEMP\/admin-secrets\.json"/);
   assert.match(named(deploy, "Deploy the serve Worker").text, /--secrets-file "\$RUNNER_TEMP\/serve-secrets\.json"/);
   const registry = named(deploy, "Deploy the registry").text;
-  assert.match(registry, /pnpm exec wrangler deploy --config \.\.\/workers\/registry\.wrangler\.jsonc/);
+  assert.match(registry, /^ {10}config=\.\.\/workers\/registry\.wrangler\.jsonc$/m);
+  assert.match(registry, /pnpm exec wrangler deploy --config "\$config"/);
+  const files = named(deploy, "Deploy the files Worker").text;
+  assert.match(files, /^ {10}config=files\/wrangler\.jsonc$/m);
+  assert.match(files, /npx wrangler deploy --config "\$config"/);
   assert.match(registry, /working-directory: serverless-registry/);
 });
 
@@ -396,8 +400,8 @@ test("the no-secrets test list is every test file but the one needing a checkout
 // answer `wrangler deployments status --json` and `wrangler versions list --json` and record a
 // `deploy`.
 const KEEPING_DEPLOYS = [
-  { step: "Deploy the registry", tool: "pnpm", cwd: "serverless-registry", worker: "tandem-tooling-registry" },
-  { step: "Deploy the files Worker", tool: "npx", cwd: ".", worker: "tandem-tooling-files" },
+  { step: "Deploy the registry", tool: "pnpm", cwd: "serverless-registry", worker: "tandem-tooling-registry", config: "../workers/registry.wrangler.jsonc" },
+  { step: "Deploy the files Worker", tool: "npx", cwd: ".", worker: "tandem-tooling-files", config: "files/wrangler.jsonc" },
 ];
 const scriptOf = (step) => {
   const at = step.lines.findIndex((line) => /^ {8}run: \|$/.test(line));
@@ -411,12 +415,12 @@ const versionList = (...ids) => ids.map((id, i) => ({ id, metadata: { created_on
 // `wrangler deployments status --json`: the latest deployment, `versions[]` with `version_id` and `percentage`.
 const deployment = (...versions) => ({ id: "d", versions: versions.map(([version_id, percentage]) => ({ version_id, percentage })) });
 
-function runKeepingDeploy({ step, tool, cwd, worker }, { versions, deployed }) {
+function runKeepingDeploy({ step, tool, cwd, worker, config }, { versions, deployed }) {
   const dir = mkdtempSync(resolve(tmpdir(), "keeping-deploy-test-"));
   try {
     const bin = resolve(dir, "bin");
     const work = resolve(dir, "work");
-    spawnSync("mkdir", ["-p", bin, resolve(work, "serverless-registry"), resolve(work, "workers"), resolve(work, "files")]);
+    for (const sub of [bin, resolve(work, "serverless-registry"), resolve(work, "workers"), resolve(work, "files")]) mkdirSync(sub, { recursive: true });
     for (const file of ["workers/registry.wrangler.jsonc", "files/wrangler.jsonc"]) {
       writeFileSync(resolve(work, file), readFileSync(resolve(here, "..", file)));
     }
@@ -447,7 +451,7 @@ function runKeepingDeploy({ step, tool, cwd, worker }, { versions, deployed }) {
     try {
       calls = readFileSync(resolve(dir, "calls"), "utf8");
     } catch {}
-    return { ...run, calls, worker };
+    return { ...run, calls, worker, config };
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
@@ -457,7 +461,7 @@ test("a deploy that keeps the Worker's secrets refuses while the latest version 
   for (const target of KEEPING_DEPLOYS) {
     const r = runKeepingDeploy(target, { versions: versionList(VERSION_A, VERSION_B, VERSION_C), deployed: deployment([VERSION_B, 100]) });
     assert.equal(r.status, 1, `${target.step}: ${r.stderr}`);
-    for (const text of [target.worker, VERSION_B, VERSION_C, "secrets from the latest version"]) {
+    for (const text of [target.worker, VERSION_B, VERSION_C, "wrangler versions deploy", "wrangler versions secret put"]) {
       assert.ok(r.stderr.includes(text), `${target.step}: stderr lacks ${text}: ${r.stderr}`);
     }
     assert.equal(r.calls, "", `${target.step}: wrangler deploy ran`);
@@ -482,7 +486,25 @@ test("a deploy that keeps the Worker's secrets deploys when the latest version s
   for (const target of KEEPING_DEPLOYS) {
     const r = runKeepingDeploy(target, { versions: versionList(VERSION_A, VERSION_B, VERSION_C), deployed: deployment([VERSION_C, 100]) });
     assert.equal(r.status, 0, `${target.step}: ${r.stderr}`);
-    assert.match(r.calls, /deploy .*--message m/, target.step);
+    assert.ok(r.calls.includes(`deploy --config ${target.config} --message m`), `${target.step}: ${r.calls}`);
+  }
+});
+
+test("a deploy that keeps the Worker's secrets refuses an empty version list", () => {
+  for (const target of KEEPING_DEPLOYS) {
+    const r = runKeepingDeploy(target, { versions: [], deployed: deployment([VERSION_C, 100]) });
+    assert.equal(r.status, 1, `${target.step}: ${r.stderr}`);
+    assert.ok(r.stderr.includes(`${target.worker}: refusing to deploy: wrangler gave no usable version list`), `${target.step}: ${r.stderr}`);
+    assert.equal(r.calls, "", `${target.step}: wrangler deploy ran`);
+  }
+});
+
+test("a deploy that keeps the Worker's secrets refuses a deployment entry without a version_id", () => {
+  for (const target of KEEPING_DEPLOYS) {
+    const r = runKeepingDeploy(target, { versions: [{ metadata: { created_on: "2026-11-01T10:00:00Z" } }], deployed: { id: "d", versions: [{ percentage: 100 }] } });
+    assert.equal(r.status, 1, `${target.step}: ${r.stderr}`);
+    assert.ok(r.stderr.includes(`${target.worker}: refusing to deploy: wrangler gave no usable deployment`), `${target.step}: ${r.stderr}`);
+    assert.equal(r.calls, "", `${target.step}: wrangler deploy ran`);
   }
 });
 
