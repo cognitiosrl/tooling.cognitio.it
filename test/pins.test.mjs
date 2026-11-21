@@ -23,8 +23,8 @@ const commit = (cwd, name) => {
   return git(cwd, "rev-parse", "HEAD");
 };
 
-// A root holding both checkouts. `fn` shapes the checkouts after the first commit; origin/aggrega
-// is made to point at the registry's first commit. The root then records each checkout's HEAD
+// A root holding both checkouts. `fn` shapes the checkouts after the first commit; origin/main
+// and origin/aggrega are made to point at the tooling's and the registry's first commit. The root then records each checkout's HEAD
 // as its gitlink, as the install's commit does, and `after` shapes the checkouts once more.
 function root(arg) {
   const setup = typeof arg === "function" ? { fn: arg } : arg;
@@ -40,7 +40,8 @@ function root(arg) {
       mkdirSync(repo);
       git(repo, "init", "-q", "-b", "main");
     }
-    commit(tooling, "one");
+    const toolingFirst = commit(tooling, "one");
+    if (!setup.noToolingMain) git(tooling, "update-ref", "refs/remotes/origin/main", toolingFirst);
     const first = commit(registry, "one");
     if (!setup.noOrigin) git(registry, "update-ref", "refs/remotes/origin/aggrega", first);
   } else {
@@ -172,5 +173,31 @@ test("a checkout that is not at the install's gitlink is refused, naming it", ()
     } finally {
       rmSync(r.dir, { recursive: true, force: true });
     }
+  }
+});
+
+test("a release tag on a commit off origin/main is refused", () => {
+  const r = root(({ tooling }) => {
+    git(tooling, "checkout", "-q", "-b", "side");
+    commit(tooling, "two");
+    git(tooling, "tag", "v1.2.3");
+  });
+  try {
+    const out = r.run();
+    assert.equal(out.status, 1);
+    assert.match(out.stderr, /^check-pins: cognitio-tooling v1\.2\.3 is not on origin\/main; a release is tagged on main$/m);
+  } finally {
+    rmSync(r.dir, { recursive: true, force: true });
+  }
+});
+
+test("a tooling checkout without origin/main is refused", () => {
+  const r = root({ noToolingMain: true, fn: ({ tooling }) => git(tooling, "tag", "v1.2.3") });
+  try {
+    const out = r.run();
+    assert.equal(out.status, 1);
+    assert.match(out.stderr, /^check-pins: cognitio-tooling has no origin\/main \(fetch the main branch\)$/m);
+  } finally {
+    rmSync(r.dir, { recursive: true, force: true });
   }
 });

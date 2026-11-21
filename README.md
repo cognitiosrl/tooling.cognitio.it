@@ -20,8 +20,11 @@ each Worker's code, variables and bindings.
 
 Two submodules carry the code that is deployed:
 
-- `cognitio-tooling` is pinned at a release tag `vX.Y.Z`.
+- `cognitio-tooling` is pinned at a release tag `vX.Y.Z` on its `main` branch.
 - `serverless-registry` is pinned at a commit of its `aggrega` branch.
+
+`scripts/check-pins.sh` refuses a deploy whose pins break either rule, or whose checkouts are not at the commits the
+gitlinks name; the deploy runs it before the tests and again before the D1 migrations and the Worker deploys.
 
 An upgrade is one commit that moves one gitlink: to a newer release tag for `cognitio-tooling`, to a newer `aggrega`
 commit for `serverless-registry`. Pushing that commit deploys it.

@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 # Checks the two pins before anything deploys. Run from the install's root, after both
 # checkouts: each checkout must be at the commit its gitlink in the install's HEAD names,
-# `cognitio-tooling` must be exactly at a release tag vX.Y.Z, and the `serverless-registry`
-# HEAD must be an ancestor of origin/aggrega. Prints both pins and exits 0, or names the
-# fault on stderr and exits 1.
+# `cognitio-tooling` must be exactly at a release tag vX.Y.Z on origin/main, and the
+# `serverless-registry` HEAD must be an ancestor of origin/aggrega. Prints both pins and exits
+# 0, or names the fault on stderr and exits 1.
 set -euo pipefail
 
 fail() {
@@ -38,6 +38,12 @@ while IFS= read -r candidate; do
   fi
 done < <(git -C "$tooling" tag --points-at HEAD)
 [[ -n $tag ]] || fail "$tooling is not exactly at a release tag vX.Y.Z (fetch its tags, and pin the tagged commit)"
+# Anyone with write access can push a tag, on any commit; a release is tagged on main, so the
+# tagged commit must also be on origin/main.
+git -C "$tooling" rev-parse --verify --quiet refs/remotes/origin/main >/dev/null ||
+  fail "$tooling has no origin/main (fetch the main branch)"
+git -C "$tooling" merge-base --is-ancestor HEAD refs/remotes/origin/main ||
+  fail "$tooling $tag is not on origin/main; a release is tagged on main"
 
 head=$(git -C "$registry" rev-parse HEAD)
 git -C "$registry" rev-parse --verify --quiet refs/remotes/origin/aggrega >/dev/null ||
