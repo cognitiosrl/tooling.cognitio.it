@@ -1,0 +1,10 @@
+node_modules/
+.wrangler/
+*.filled.jsonc
+*secrets*.json
+consumers.htpasswd
+iac/.terraform/
+*.tfstate
+*.tfstate.*
+*.tfplan
+terraform.tfvars

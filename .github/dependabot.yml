@@ -1,0 +1,22 @@
+version: 2
+updates:
+  - package-ecosystem: npm
+    directories:
+      - /
+      - /files
+    schedule:
+      interval: monthly
+    cooldown:
+      default-days: 3
+    groups:
+      patch-and-minor:
+        update-types: [minor, patch]
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: monthly
+    cooldown:
+      default-days: 3
+    groups:
+      patch-and-minor:
+        update-types: [minor, patch]

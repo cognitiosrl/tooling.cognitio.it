@@ -1,0 +1,6 @@
+[submodule "cognitio-tooling"]
+	path = cognitio-tooling
+	url = https://github.com/cognitiosrl/cognitio-tooling.git
+[submodule "serverless-registry"]
+	path = serverless-registry
+	url = https://github.com/aggrega-ai/serverless-registry.git
