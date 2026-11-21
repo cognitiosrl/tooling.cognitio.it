@@ -234,9 +234,19 @@ test('init gets the bucket and the install\'s key', () => {
   assert.match(init[0], /-lockfile=readonly/);
   assert.ok(init[0].includes(`-backend-config=bucket=${BUCKET}`));
   assert.ok(init[0].includes(`-backend-config=key=${KEY}`));
-  const plan = called(r, 'plan');
-  assert.match(plan[0], /-lock-timeout=10m/);
-  assert.match(plan[0], /-out=/);
+});
+
+test('plan takes no state lock; the plan inside apply takes it', () => {
+  const { run } = setup();
+  const [planOnly] = called(run(['plan']), 'plan');
+  assert.match(planOnly, / -lock=false /);
+  assert.doesNotMatch(planOnly, /-lock-timeout/);
+  assert.match(planOnly, /-out=/);
+  const { run: run2 } = setup();
+  const [inApply] = called(run2(['apply', '--confirmed'], { STUB_PLAN_JSON: fixture('plan-update.json') }), 'plan');
+  assert.match(inApply, /-lock-timeout=10m/);
+  assert.doesNotMatch(inApply, /-lock=false/);
+  assert.match(inApply, /-out=/);
 });
 
 test('an init failure names the bucket and key and exits 1', () => {

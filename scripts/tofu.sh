@@ -3,7 +3,8 @@
 # and a person run it.
 #
 #   scripts/tofu.sh plan
-#       init, plan; changes nothing.
+#       init, plan; changes nothing and takes no state lock (-lock=false), so
+#       a cancelled run never leaves the lock held.
 #   scripts/tofu.sh apply [--confirmed] [--delete-confirmed]
 #       init, plan, then apply. A plan that deletes, replaces or forgets (drops
 #       from the state) a resource is refused unless both --confirmed and
@@ -287,7 +288,14 @@ if [ "$ACTION" = output ]; then
 fi
 
 plan="$WORK/plan.tfplan"
-tofu plan -input=false -no-color -lock-timeout=10m -out="$plan"
+# The plan action only reads the state, so it takes no lock; inside apply the plan takes
+# the lock, as the apply after it does.
+if [ "$ACTION" = plan ]; then
+  lock=(-lock=false)
+else
+  lock=(-lock-timeout=10m)
+fi
+tofu plan -input=false -no-color "${lock[@]}" -out="$plan"
 
 if [ "$ACTION" = plan ]; then
   exit 0
