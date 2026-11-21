@@ -181,16 +181,21 @@ export TF_IN_AUTOMATION=1
 WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
 
-# The token travels to curl on stdin, never in an argument list.
+# The token travels to curl on stdin, never in an argument list. curl's own error text (it
+# never contains a request header) goes to $1 and is printed only when both endpoints fail.
 verify_token_id() {
   printf 'Authorization: Bearer %s\n' "$CLOUDFLARE_API_TOKEN" |
-    curl --silent --show-error --fail --max-time 30 --header @- "$1" |
+    curl --silent --show-error --fail --max-time 30 --header @- "$2" 2>"$1" |
     jq -er '.result.id | select(type == "string" and . != "")' 2>/dev/null
 }
 
-token_id="$(verify_token_id "$API/accounts/$CLOUDFLARE_ACCOUNT_ID/tokens/verify" || true)"
+token_id="$(verify_token_id "$WORK/account-verify.err" "$API/accounts/$CLOUDFLARE_ACCOUNT_ID/tokens/verify" || true)"
 if [ -z "$token_id" ]; then
-  token_id="$(verify_token_id "$API/user/tokens/verify" || true)"
+  token_id="$(verify_token_id "$WORK/user-verify.err" "$API/user/tokens/verify" || true)"
+fi
+if [ -z "$token_id" ]; then
+  sed 's|^|accounts/.../tokens/verify: |' "$WORK/account-verify.err" >&2
+  sed 's|^|user/tokens/verify: |' "$WORK/user-verify.err" >&2
 fi
 [ -n "$token_id" ] || die 1 "CLOUDFLARE_API_TOKEN is not verified by either tokens/verify endpoint"
 # printf is a builtin: the token stays out of any process's arguments.

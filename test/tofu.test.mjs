@@ -65,10 +65,10 @@ for a in "$@"; do case "$a" in https://*) url="$a" ;; esac; done
 printf 'ARGV\\t%s\\nHEADER\\t%s\\nURL\\t%s\\n' "$*" "$header" "$url" >>"$STUB_LOG"
 case "$url" in
   */accounts/*/tokens/verify)
-    [ -z "\${STUB_ACCOUNT_FAIL:-}" ] || exit 22
+    [ -z "\${STUB_ACCOUNT_FAIL:-}" ] || { echo "curl: (22) The requested URL returned error: 401" >&2; exit 22; }
     printf '{"success":true,"result":{"id":"acct-token-id","status":"active"}}' ;;
   */user/tokens/verify)
-    [ -z "\${STUB_USER_FAIL:-}" ] || exit 22
+    [ -z "\${STUB_USER_FAIL:-}" ] || { echo "curl: (22) The requested URL returned error: 403" >&2; exit 22; }
     printf '{"success":true,"result":{"id":"user-token-id","status":"active"}}' ;;
   *) exit 22 ;;
 esac
@@ -213,6 +213,25 @@ test('the account endpoint is tried before the user endpoint', () => {
     'https://api.cloudflare.com/client/v4/user/tokens/verify',
   ]);
   assert.equal(second.envs.AWS_ACCESS_KEY_ID, 'user-token-id');
+});
+
+test('an account endpoint refusal is not printed when the user endpoint verifies the token', () => {
+  const { run } = setup();
+  const r = run(['plan'], { STUB_ACCOUNT_FAIL: '1' });
+  assert.equal(r.status, 0, r.out);
+  assert.doesNotMatch(r.stderr, /curl:/);
+  assert.equal(r.envs.AWS_ACCESS_KEY_ID, 'user-token-id');
+});
+
+test('when both tokens/verify endpoints fail, each failure is printed', () => {
+  const { run } = setup();
+  const r = run(['plan'], { STUB_ACCOUNT_FAIL: '1', STUB_USER_FAIL: '1' });
+  assert.equal(r.status, 1);
+  assert.match(r.stderr, /accounts\/\.\.\.\/tokens\/verify: curl: \(22\) The requested URL returned error: 401/);
+  assert.match(r.stderr, /user\/tokens\/verify: curl: \(22\) The requested URL returned error: 403/);
+  assert.match(r.stderr, /CLOUDFLARE_API_TOKEN is not verified by either tokens\/verify endpoint/);
+  assert.ok(!r.out.includes(TOKEN));
+  assert.equal(r.calls.length, 0);
 });
 
 test('a token neither endpoint verifies exits 1 before any tofu call', () => {
