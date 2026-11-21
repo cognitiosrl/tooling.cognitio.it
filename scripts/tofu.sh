@@ -13,8 +13,13 @@
 #       init, then write every output to <file> as NAME=value lines, the
 #       sensitive ones masked first. Only under GitHub Actions.
 #   scripts/tofu.sh migrate-state <plain state file>
-#       By hand only (refused under GITHUB_ACTIONS): copies the file into iac/
-#       (mode 600), runs tofu init -migrate-state -force-copy, removes the copy.
+#       By hand only (refused under GITHUB_ACTIONS): carries a plain state into
+#       the bucket, encrypted. iac/encryption.tf refuses a plain state, so the
+#       migration runs in a copy of iac/ under a temporary directory, where
+#       encryption.tf is replaced by one that also reads a plain state: the file
+#       is copied in (mode 600) and tofu init -migrate-state -force-copy runs
+#       there. iac/ is never changed; the temporary directory, the copy with
+#       it, is removed on exit.
 #
 # Inputs come from the environment only:
 #   CLOUDFLARE_API_TOKEN, CLOUDFLARE_ACCOUNT_ID, TOFU_STATE_BUCKET,
@@ -113,12 +118,6 @@ case "$ACTION" in
     on_actions && die 2 "migrate-state is by hand only and is refused under GITHUB_ACTIONS"
     [ -n "$STATE_FILE" ] || { usage >&2; exit 2; }
     [ -f "$STATE_FILE" ] || die 2 "the state file $STATE_FILE does not exist"
-    [ ! -e "$IAC/.terraform/terraform.tfstate" ] ||
-      die 2 "iac/.terraform/terraform.tfstate exists: a backend is already initialised and init -migrate-state would copy nothing; remove iac/.terraform and run again"
-    [ ! -e "$IAC/terraform.tfstate" ] ||
-      die 2 "iac/terraform.tfstate already exists and is never overwritten; move it away and run again"
-    [ ! -e "$IAC/terraform.tfstate.backup" ] ||
-      die 2 "iac/terraform.tfstate.backup already exists; move it away and run again"
     ;;
 esac
 
@@ -152,12 +151,7 @@ fi
 export TF_IN_AUTOMATION=1
 
 WORK="$(mktemp -d)"
-COPIED_STATE=""
-cleanup() {
-  rm -rf "$WORK"
-  if [ -n "$COPIED_STATE" ]; then rm -f "$COPIED_STATE" "$COPIED_STATE.backup"; fi
-}
-trap cleanup EXIT
+trap 'rm -rf "$WORK"' EXIT
 
 # The token travels to curl on stdin, never in an argument list.
 verify_token_id() {
@@ -180,19 +174,57 @@ export AWS_ACCESS_KEY_ID="$token_id"
 export AWS_SECRET_ACCESS_KEY="$token_secret"
 export AWS_ENDPOINT_URL_S3="https://${CLOUDFLARE_ACCOUNT_ID}.${R2_ENDPOINT_SUFFIX}"
 
-cd "$IAC"
-
 init_args=(init -input=false -lockfile=readonly
   "-backend-config=bucket=$TOFU_STATE_BUCKET"
   "-backend-config=key=$STATE_KEY")
 
+# A copy of iac/'s configuration, its .tf files and lockfile, in a new directory.
+copy_iac() {
+  mkdir "$1"
+  cp "$IAC"/*.tf "$IAC/.terraform.lock.hcl" "$1/"
+}
+
+# The migration's encryption config, written only into the migration's copy of iac/: the
+# key provider and method of iac/encryption.tf, and a plain state read as the state's
+# fallback. The two are kept the same on purpose, so the state the migration writes reads
+# back under iac/encryption.tf; test/tofu.test.mjs compares them.
+migration_encryption() {
+  cat <<'HCL'
+terraform {
+  encryption {
+    key_provider "pbkdf2" "passphrase" {
+      passphrase = var.state_passphrase # gitleaks:allow reads the input variable, not a value
+    }
+    method "aes_gcm" "state" {
+      keys = key_provider.pbkdf2.passphrase
+    }
+    method "unencrypted" "plain" {}
+    state {
+      method = method.aes_gcm.state
+      fallback {
+        method = method.unencrypted.plain
+      }
+    }
+    plan {
+      method   = method.aes_gcm.state
+      enforced = true
+    }
+  }
+}
+HCL
+}
+
 if [ "$ACTION" = migrate-state ]; then
-  install -m 600 "$STATE_FILE" "$IAC/terraform.tfstate"
-  COPIED_STATE="$IAC/terraform.tfstate"
-  tofu "${init_args[@]}" -lock-timeout=10m -migrate-state -force-copy ||
+  migration="$WORK/migration"
+  copy_iac "$migration"
+  migration_encryption >"$migration/encryption.tf"
+  install -m 600 "$STATE_FILE" "$migration/terraform.tfstate"
+  tofu -chdir="$migration" "${init_args[@]}" -lock-timeout=10m -migrate-state -force-copy ||
     die 1 "tofu init -migrate-state failed for bucket $TOFU_STATE_BUCKET, key $STATE_KEY"
   exit 0
 fi
+
+cd "$IAC"
 
 tofu "${init_args[@]}" ||
   die 1 "tofu init failed for bucket $TOFU_STATE_BUCKET, key $STATE_KEY"

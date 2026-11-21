@@ -17,15 +17,22 @@ const ACCOUNT_ID = 'acc0123456789';
 const BUCKET = 'test-state-bucket';
 const KEY = 'cognitio-tooling/tooling.cognitio.it/terraform.tfstate';
 
+// Each call is logged as a CALL line (the arguments after any -chdir) followed by what the
+// call saw: its working directory, the files there, its environment, the plain state's mode
+// and the encryption config, base64.
 const STUB_TOFU = `#!/usr/bin/env bash
+case "$1" in -chdir=*) cd "\${1#-chdir=}" || exit 1; shift ;; esac
 {
   printf 'CALL\\t%s\\n' "$*"
+  printf 'CWD\\t%s\\n' "$PWD"
+  printf 'FILES\\t%s\\n' "$(ls -A | LC_ALL=C sort | tr '\\n' ' ')"
   for v in AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_ENDPOINT_URL_S3 TF_IN_AUTOMATION \\
            TF_VAR_account_id TF_VAR_zone_ids TF_VAR_access_idp_id TF_VAR_access_allowed_emails \\
            TF_VAR_admin_service_token_id TF_VAR_state_passphrase; do
     printf 'ENV\\t%s=%s\\n' "$v" "\${!v-<unset>}"
   done
   if [ -e terraform.tfstate ]; then printf 'STATE\\tmode=%s\\n' "$(stat -c %a terraform.tfstate)"; fi
+  if [ -e encryption.tf ]; then printf 'ENC\\t%s\\n' "$(base64 -w0 encryption.tf)"; fi
 } >>"$STUB_LOG"
 case "$1" in
   init) case " $* " in *' -migrate-state '*) touch terraform.tfstate.backup ;; esac
@@ -64,13 +71,18 @@ const inputs = () => ({
   ADMIN_SERVICE_TOKEN_ID: 'svc-made-up',
 });
 
-// A working copy of the script's layout with stub tofu and curl first on PATH.
+const iacDir = resolve(here, '..', 'iac');
+const iacFiles = [...readdirSync(iacDir).filter((f) => f.endsWith('.tf')), '.terraform.lock.hcl'];
+
+// A working copy of the script's layout, with iac/'s configuration files, and stub tofu and
+// curl first on PATH.
 function setup() {
   const dir = mkdtempSync(join(tmpdir(), 'tofu-test-'));
   mkdirSync(join(dir, 'scripts'));
   mkdirSync(join(dir, 'iac'));
   mkdirSync(join(dir, 'bin'));
   copyFileSync(script, join(dir, 'scripts', 'tofu.sh'));
+  for (const f of iacFiles) copyFileSync(join(iacDir, f), join(dir, 'iac', f));
   for (const [name, body] of [['tofu', STUB_TOFU], ['curl', STUB_CURL]]) {
     writeFileSync(join(dir, 'bin', name), body);
     chmodSync(join(dir, 'bin', name), 0o755);
@@ -97,7 +109,15 @@ function setup() {
       lines.filter(([k]) => k === 'ENV').map(([, v]) => [v.slice(0, v.indexOf('=')), v.slice(v.indexOf('=') + 1)]),
     );
     const curl = lines.filter(([k]) => k === 'URL').map(([, v]) => v);
-    return { ...r, dir, lines, calls, envs, curl, out: r.stdout + r.stderr };
+    // One record per tofu call, with what that call saw.
+    const records = [];
+    for (const [k, v] of lines) {
+      if (k === 'CALL') records.push({ call: v });
+      else if (records.length > 0 && ['CWD', 'FILES', 'STATE', 'ENC'].includes(k)) {
+        records[records.length - 1][k.toLowerCase()] = k === 'ENC' ? Buffer.from(v, 'base64').toString('utf8') : v;
+      }
+    }
+    return { ...r, dir, lines, calls, envs, curl, records, out: r.stdout + r.stderr };
   };
   return { dir, run };
 }
@@ -365,6 +385,91 @@ const plainState = (dir) => {
   return f;
 };
 
+// HCL read as text: comments dropped, then the block a header opens, its braces matched.
+const stripComments = (text) => text.replace(/#.*$/gm, '');
+function block(text, header) {
+  const m = new RegExp(`^\\s*${header}\\s*\\{`, 'm').exec(text);
+  if (!m) return undefined;
+  let depth = 0;
+  for (let i = m.index + m[0].length - 1; i < text.length; i++) {
+    if (text[i] === '{') depth++;
+    else if (text[i] === '}' && --depth === 0) return text.slice(m.index, i + 1);
+  }
+  return undefined;
+}
+const squash = (text) => text.replace(/\s+/g, ' ').trim();
+
+// Every file under a directory, by relative path, with the SHA-256 of its content.
+function digest(root) {
+  const out = {};
+  const walk = (d) => {
+    for (const e of readdirSync(d, { withFileTypes: true })) {
+      const p = join(d, e.name);
+      if (e.isDirectory()) walk(p);
+      else out[p.slice(root.length + 1)] = createHash('sha256').update(readFileSync(p)).digest('hex');
+    }
+  };
+  walk(root);
+  return out;
+}
+const migrations = (r) => r.records.filter((c) => ` ${c.call} `.includes(' -migrate-state '));
+
+test('the committed encryption config enforces the state and the plan, with no plain method', () => {
+  const tf = iacFiles.filter((f) => f.endsWith('.tf')).map((f) => [f, stripComments(readFileSync(join(iacDir, f), 'utf8'))]);
+  for (const [f, text] of tf) assert.doesNotMatch(text, /method\s+"unencrypted"/, f);
+  const holders = tf.filter(([, text]) => /^\s*encryption\s*\{/m.test(text)).map(([f]) => f);
+  // migrate-state replaces this one file in its copy of iac/.
+  assert.deepEqual(holders, ['encryption.tf']);
+  const encryption = block(tf.find(([f]) => f === 'encryption.tf')[1], 'encryption');
+  for (const name of ['state', 'plan']) {
+    const b = block(encryption, name);
+    assert.ok(b, `the encryption block has a ${name} block`);
+    assert.match(b, /^\s*enforced\s*=\s*true\s*$/m, name);
+    assert.doesNotMatch(b, /fallback/, name);
+  }
+});
+
+test('migrate-state migrates in a copy of iac/ whose encryption config also reads a plain state, leaving iac/ unchanged', () => {
+  const { dir, run } = setup();
+  // A backend iac/ was initialised with, and a state file in iac/, are neither refused nor read.
+  mkdirSync(join(dir, 'iac', '.terraform'));
+  writeFileSync(join(dir, 'iac', '.terraform', 'terraform.tfstate'), '{"backend":{}}');
+  writeFileSync(join(dir, 'iac', 'terraform.tfstate'), 'keep me');
+  const iac = join(dir, 'iac');
+  const before = digest(iac);
+  const r = run(['migrate-state', plainState(dir)]);
+  assert.equal(r.status, 0, r.out);
+  const [m, ...more] = migrations(r);
+  assert.equal(more.length, 0);
+  assert.ok(m.cwd !== iac && !m.cwd.startsWith(`${iac}/`), `the migration ran in ${m.cwd}`);
+  assert.equal(m.files.trim(), [...new Set([...iacFiles, 'encryption.tf', 'terraform.tfstate'])].sort().join(' '));
+  assert.equal(m.state, 'mode=600');
+  const enc = stripComments(m.enc);
+  assert.match(enc, /^\s*method\s+"unencrypted"\s+"\w+"\s*\{\s*\}/m);
+  assert.match(block(block(enc, 'encryption'), 'state'), /^\s*fallback\s*\{\s*method\s*=\s*method\.unencrypted\.\w+\s*\}/m);
+  // The key provider and the method are iac/encryption.tf's, so the state reads back under it.
+  const committed = stripComments(readFileSync(join(iacDir, 'encryption.tf'), 'utf8'));
+  for (const header of ['key_provider "pbkdf2" "passphrase"', 'method "aes_gcm" "state"']) {
+    assert.equal(squash(block(enc, header)), squash(block(committed, header)), header);
+  }
+  assert.deepEqual(digest(iac), before);
+  assert.ok(!existsSync(m.cwd), 'the copy is removed');
+});
+
+test('migrate-state needs only its four inputs and passes the bucket and key', () => {
+  const { dir, run } = setup();
+  const env = Object.fromEntries(Object.entries(inputs()).filter(([k]) => migrateInputs.includes(k)));
+  const r = run(['migrate-state', plainState(dir)], {}, { withInputs: false });
+  assert.equal(r.status, 2, 'without the four inputs migrate-state exits 2');
+  const r2 = run(['migrate-state', plainState(dir)], env, { withInputs: false });
+  assert.equal(r2.status, 0, r2.out);
+  const [m] = migrations(r2);
+  assert.match(m.call, /-force-copy/);
+  assert.match(m.call, /-lock-timeout=10m/);
+  assert.ok(m.call.includes(`-backend-config=bucket=${BUCKET}`));
+  assert.ok(m.call.includes(`-backend-config=key=${KEY}`));
+});
+
 test('migrate-state is refused under GITHUB_ACTIONS', () => {
   const { dir, run } = setup();
   const r = run(['migrate-state', plainState(dir)], { GITHUB_ACTIONS: 'true' });
@@ -380,50 +485,12 @@ test('migrate-state refuses a file that does not exist', () => {
   assert.match(r.stderr, /nope\.tfstate/);
 });
 
-test('migrate-state copies with mode 600 and removes the copy', () => {
-  const { dir, run } = setup();
-  const env = Object.fromEntries(Object.entries(inputs()).filter(([k]) => migrateInputs.includes(k)));
-  const r = run(['migrate-state', plainState(dir)], {}, { withInputs: false });
-  assert.equal(r.status, 2, 'without the four inputs migrate-state exits 2');
-  const r2 = run(['migrate-state', plainState(dir)], env, { withInputs: false });
-  assert.equal(r2.status, 0, r2.out);
-  const init = called(r2, 'init');
-  assert.equal(init.length, 1);
-  assert.match(init[0], /-migrate-state/);
-  assert.match(init[0], /-force-copy/);
-  assert.ok(init[0].includes(`-backend-config=bucket=${BUCKET}`));
-  assert.ok(init[0].includes(`-backend-config=key=${KEY}`));
-  assert.ok(r2.lines.some(([k, v]) => k === 'STATE' && v === 'mode=600'));
-  assert.ok(!existsSync(join(dir, 'iac', 'terraform.tfstate')));
-});
-
-test('migrate-state refuses while a backend is already initialised', () => {
-  const { dir, run } = setup();
-  mkdirSync(join(dir, 'iac', '.terraform'));
-  writeFileSync(join(dir, 'iac', '.terraform', 'terraform.tfstate'), '{}');
-  const r = run(['migrate-state', plainState(dir)]);
-  assert.equal(r.status, 2);
-  assert.match(r.stderr, /iac\/\.terraform\/terraform\.tfstate/);
-  assert.match(r.stderr, /remove iac\/\.terraform/);
-  assert.equal(r.calls.length, 0);
-});
-
-test('migrate-state refuses to overwrite iac/terraform.tfstate', () => {
-  const { dir, run } = setup();
-  writeFileSync(join(dir, 'iac', 'terraform.tfstate'), 'keep me');
-  const r = run(['migrate-state', plainState(dir)]);
-  assert.equal(r.status, 2);
-  assert.match(r.stderr, /iac\/terraform\.tfstate/);
-  assert.equal(readFileSync(join(dir, 'iac', 'terraform.tfstate'), 'utf8'), 'keep me');
-  assert.equal(r.calls.length, 0);
-});
-
 test('migrate-state reads a relative state path from the working copy root', () => {
   const { dir, run } = setup();
   plainState(dir);
   const r = run(['migrate-state', 'plain.tfstate'], {}, { cwd: dir });
   assert.equal(r.status, 0, r.out);
-  assert.equal(called(r, 'init').length, 1);
+  assert.equal(migrations(r).length, 1);
 });
 
 test('output writes a relative path next to the caller, not into iac/', () => {
@@ -434,42 +501,19 @@ test('output writes a relative path next to the caller, not into iac/', () => {
   assert.ok(!existsSync(join(dir, 'iac', 'gh-out')));
 });
 
-test('migrate-state refuses while iac/terraform.tfstate.backup exists', () => {
-  const { dir, run } = setup();
-  writeFileSync(join(dir, 'iac', 'terraform.tfstate.backup'), 'keep me');
-  const r = run(['migrate-state', plainState(dir)]);
-  assert.equal(r.status, 2);
-  assert.match(r.stderr, /iac\/terraform\.tfstate\.backup/);
-  assert.equal(r.calls.length, 0);
-});
-
-test('migrate-state removes the copy and the backup tofu wrote', () => {
-  const { dir, run } = setup();
-  const r = run(['migrate-state', plainState(dir)]);
-  assert.equal(r.status, 0, r.out);
-  assert.ok(!existsSync(join(dir, 'iac', 'terraform.tfstate.backup')));
-  assert.match(called(r, 'init')[0], /-lock-timeout=10m/);
-});
-
-test('migrate-state removes the plain copy when init fails', () => {
-  const { dir, run } = setup();
-  const r = run(['migrate-state', plainState(dir)], { STUB_INIT_FAIL: '1' });
-  assert.equal(r.status, 1);
-  assert.ok(r.lines.some(([k, v]) => k === 'STATE' && v === 'mode=600'));
-  assert.ok(!existsSync(join(dir, 'iac', 'terraform.tfstate')));
-  assert.ok(!existsSync(join(dir, 'iac', 'terraform.tfstate.backup')));
-});
-
-test('the temporary directory is removed on exit', () => {
+test('the temporary directory is removed on exit, a failed migration\'s plain copy with it', () => {
   const { dir, run } = setup();
   const tmp = join(dir, 'tmp');
   mkdirSync(tmp);
-  for (const [args, env] of [
-    [['apply'], { STUB_PLAN_JSON: fixture('plan-create.json') }],
-    [['apply', '--confirmed'], { STUB_PLAN_JSON: fixture('plan-update.json') }],
+  for (const [args, env, status] of [
+    [['apply'], { STUB_PLAN_JSON: fixture('plan-create.json') }, 1],
+    [['apply', '--confirmed'], { STUB_PLAN_JSON: fixture('plan-update.json') }, 0],
+    [['migrate-state', plainState(dir)], {}, 0],
+    [['migrate-state', plainState(dir)], { STUB_INIT_FAIL: '1' }, 1],
   ]) {
-    run(args, { TMPDIR: tmp, ...env });
-    assert.deepEqual(readdirSync(tmp), []);
+    const r = run(args, { TMPDIR: tmp, ...env });
+    assert.equal(r.status, status, `${args[0]}: ${r.out}`);
+    assert.deepEqual(readdirSync(tmp), [], args.join(' '));
   }
 });
 
