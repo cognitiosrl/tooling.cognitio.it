@@ -3,7 +3,9 @@
 // `      - name:`; comments are dropped before any search, so a header may name a secret freely.
 
 import assert from "node:assert/strict";
-import { readFileSync, readdirSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+import { mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { dirname, resolve } from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
@@ -270,6 +272,63 @@ test("the pin-reading steps are the same in both workflows", () => {
   const strip = (step) => step.lines.filter((line) => !/^ {8}if: /.test(line)).join("\n");
   for (const name of ["Read the pins", "Check out cognitio-tooling", "Check out serverless-registry"]) {
     assert.equal(strip(named(plan, name)), strip(named(deploy, name)), name);
+  }
+});
+
+// The "Read the pins" script, run in a repository holding the given .gitmodules and a gitlink
+// for each checkout.
+const TOOLING_PIN = "a".repeat(40);
+const REGISTRY_PIN = "b".repeat(40);
+function readPins(gitmodules) {
+  const step = named(deploy, "Read the pins");
+  const at = step.lines.findIndex((line) => /^ {8}run: \|$/.test(line));
+  const script = step.lines.slice(at + 1).map((line) => line.slice(10)).join("\n");
+  const dir = mkdtempSync(resolve(tmpdir(), "read-pins-test-"));
+  const git = (...args) => {
+    const r = spawnSync("git", ["-c", "user.name=t", "-c", "user.email=t@example.com", "-c", "commit.gpgsign=false", ...args], { cwd: dir, encoding: "utf8" });
+    assert.equal(r.status, 0, r.stderr);
+  };
+  try {
+    git("init", "-q", "-b", "main");
+    writeFileSync(resolve(dir, ".gitmodules"), gitmodules);
+    git("add", ".gitmodules");
+    git("update-index", "--add", "--cacheinfo", `160000,${TOOLING_PIN},cognitio-tooling`);
+    git("update-index", "--add", "--cacheinfo", `160000,${REGISTRY_PIN},serverless-registry`);
+    git("commit", "-q", "-m", "pins");
+    const output = resolve(dir, "github-output");
+    writeFileSync(output, "");
+    const run = spawnSync("bash", ["-c", script], { cwd: dir, encoding: "utf8", env: { PATH: process.env.PATH, GITHUB_OUTPUT: output } });
+    return { ...run, output: readFileSync(output, "utf8") };
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+const gitmodules = (toolingUrl, registryUrl) =>
+  `[submodule "cognitio-tooling"]\n\tpath = cognitio-tooling\n\turl = ${toolingUrl}\n` +
+  `[submodule "serverless-registry"]\n\tpath = serverless-registry\n\turl = ${registryUrl}\n`;
+
+test("the pin reader writes the repositories and the commits from the install's .gitmodules", () => {
+  const r = readPins(readFileSync(resolve(here, "..", ".gitmodules"), "utf8"));
+  assert.equal(r.status, 0, r.stderr);
+  assert.equal(
+    r.output,
+    `tooling_repository=cognitiosrl/cognitio-tooling\ntooling_commit=${TOOLING_PIN}\n` +
+      `registry_repository=aggrega-ai/serverless-registry\nregistry_commit=${REGISTRY_PIN}\n`,
+  );
+});
+
+test("the pin reader refuses a .gitmodules URL that is not a github.com repository, writing nothing", () => {
+  const good = { tooling: "https://github.com/cognitiosrl/cognitio-tooling.git", registry: "https://github.com/aggrega-ai/serverless-registry.git" };
+  // A value can carry an escaped newline, which would add a line to the step's outputs.
+  const injected = "https://github.com/o/r\\nregistry_commit=0000000000000000000000000000000000000000";
+  for (const [name, modules] of [
+    ["cognitio-tooling", gitmodules(injected, good.registry)],
+    ["serverless-registry", gitmodules(good.tooling, injected)],
+  ]) {
+    const r = readPins(modules);
+    assert.equal(r.status, 1, name);
+    assert.equal(r.stderr, `the .gitmodules URL of ${name} is not https://github.com/<owner>/<repository>\n`, name);
+    assert.equal(r.output, "", name);
   }
 });
 

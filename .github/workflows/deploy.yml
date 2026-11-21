@@ -57,17 +57,37 @@ jobs:
         id: pins
         run: |
           set -euo pipefail
+          # Each value is checked before any is written: a .gitmodules value can carry a newline,
+          # which would add a line to the step's outputs.
           repository() {
             local url
             url=$(git config --file .gitmodules --get "submodule.$1.url")
             url=${url#https://github.com/}
-            printf '%s' "${url%.git}"
+            url=${url%.git}
+            if [[ ! $url =~ ^[A-Za-z0-9-]+/[A-Za-z0-9._-]+$ ]]; then
+              echo "the .gitmodules URL of $1 is not https://github.com/<owner>/<repository>" >&2
+              return 1
+            fi
+            printf '%s' "$url"
           }
+          gitlink() {
+            local commit
+            commit=$(git rev-parse "HEAD:$1")
+            if [[ ! $commit =~ ^[0-9a-f]{40}$ ]]; then
+              echo "the gitlink of $1 is not a commit id" >&2
+              return 1
+            fi
+            printf '%s' "$commit"
+          }
+          tooling_repository=$(repository cognitio-tooling)
+          tooling_commit=$(gitlink cognitio-tooling)
+          registry_repository=$(repository serverless-registry)
+          registry_commit=$(gitlink serverless-registry)
           {
-            printf 'tooling_repository=%s\n' "$(repository cognitio-tooling)"
-            printf 'tooling_commit=%s\n' "$(git rev-parse HEAD:cognitio-tooling)"
-            printf 'registry_repository=%s\n' "$(repository serverless-registry)"
-            printf 'registry_commit=%s\n' "$(git rev-parse HEAD:serverless-registry)"
+            printf 'tooling_repository=%s\n' "$tooling_repository"
+            printf 'tooling_commit=%s\n' "$tooling_commit"
+            printf 'registry_repository=%s\n' "$registry_repository"
+            printf 'registry_commit=%s\n' "$registry_commit"
           } >> "$GITHUB_OUTPUT"
 
       - name: Check out cognitio-tooling
