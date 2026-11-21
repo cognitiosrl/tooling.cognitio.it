@@ -49,7 +49,8 @@ set -euo pipefail
 # TF_CLI_ARGS_<command> would add arguments to the commands below, TF_ENCRYPTION would add
 # encryption config, and a TF_VAR_<name> would override a committed default; the only TF_VAR_
 # values OpenTofu sees are the ones this script exports from the inputs.
-# TF_CLI_CONFIG_FILE stays: the lockfile's checksums bound any provider source; a plugin cache stays usable.
+# TF_CLI_CONFIG_FILE is kept: CI never sets it, and a run by hand reads the operator's own CLI
+# configuration either way (the file it names, else ~/.tofurc).
 unset TF_DATA_DIR TF_WORKSPACE TF_ENCRYPTION
 while IFS= read -r name; do unset "$name"; done < <(compgen -v TF_CLI_ARGS || true; compgen -v TF_VAR_ || true)
 
