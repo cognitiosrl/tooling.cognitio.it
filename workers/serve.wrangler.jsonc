@@ -1,0 +1,33 @@
+// The serving Worker of the cognitio-tooling instance: it serves the site modules at
+// tooling.cognitio.it. No route is declared here: OpenTofu in ../iac owns them.
+//
+// Its VERIFIER_KEY secret is not in this file: the deploy uploads it from its secrets
+// file together with the Worker, the same value the admin Worker holds.
+//
+// The database id is filled by scripts/fill-config.mjs, which writes serve.filled.jsonc
+// beside this file; that is the file the deploy uses.
+{
+  "name": "cognitio-tooling",
+  "main": "../cognitio-tooling/src/serve.js",
+  "compatibility_date": "2026-11-01",
+  "workers_dev": false,
+  "preview_urls": false,
+  "vars": {
+    "PUBLIC_URL": "https://tooling.cognitio.it",
+    "DEFAULT_NAMESPACE": "cognitio",
+    "IMMUTABLE_PREFIXES": ["archives/"],
+    "LEGACY_LAYOUT": "read",
+    "CACHE_TTL_SECONDS": "60"
+  },
+  // The bucket the TANDEM files Worker binds (../files/wrangler.jsonc).
+  "r2_buckets": [{ "binding": "FILES", "bucket_name": "tandem-tooling" }],
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "cognitio-tooling",
+      // The `d1_database_id` output of ../iac.
+      "database_id": "REPLACE_D1_DATABASE_ID"
+    }
+  ],
+  "ratelimits": [{ "name": "AUTH_LIMIT", "namespace_id": "1001", "simple": { "limit": 20, "period": 60 } }]
+}

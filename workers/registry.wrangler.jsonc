@@ -1,0 +1,29 @@
+{
+  // The TANDEM tooling registry on tooling.aggrega.ai: a second instance of the
+  // hub's registry Worker, built from the serverless-registry fork, with its own Worker
+  // name and R2 bucket. It serves the TANDEM container Features and Template.
+  //
+  // Deployed with `--config` pointing here, so the fork stays untouched: `main` names the
+  // fork's entry point relative to this file.
+  //
+  // No secrets live here. USERNAME/PASSWORD (the release workflow's push pair) and
+  // READONLY_USERNAME/READONLY_PASSWORD (the consumers' pull-only pair) are secrets of the
+  // deployed Worker, which every deploy keeps. The custom domain and its DNS record are
+  // owned by OpenTofu in ../iac, so no routes are declared here.
+  "name": "tandem-tooling-registry",
+  "main": "../serverless-registry/index.ts",
+  "compatibility_date": "2024-09-09",
+  "compatibility_flags": ["nodejs_compat"],
+
+  // Served only on the OpenTofu-managed custom domain; no *.workers.dev URL.
+  "workers_dev": false,
+  "preview_urls": false,
+
+  // Its own bucket, apart from the hub's. The plugin marketplace Worker reads the
+  // same bucket under its own key prefix.
+  "r2_buckets": [{ "binding": "REGISTRY", "bucket_name": "tandem-tooling" }],
+  "vars": {
+    // Private: every request, pulls included, needs a credential.
+    "READONLY_ANONYMOUS": "false"
+  }
+}

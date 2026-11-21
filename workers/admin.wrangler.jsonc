@@ -1,0 +1,40 @@
+// The admin Worker of the cognitio-tooling instance: it answers on tooling-admin.cognitio.it,
+// behind the Access application ../iac declares. No route is declared here: OpenTofu in
+// ../iac owns it.
+//
+// Its VERIFIER_KEY secret (the same value the serving Worker holds) and its CSRF_KEY secret
+// (the panel's form-token key) are not in this file: the deploy uploads them from its
+// secrets file together with the Worker.
+//
+// The database id, the Access audience and the Access team domain are filled by
+// scripts/fill-config.mjs, which writes admin.filled.jsonc beside this file; that is the
+// file the deploy uses.
+{
+  "name": "cognitio-tooling-admin",
+  "main": "../cognitio-tooling/src/admin.js",
+  "compatibility_date": "2026-11-01",
+  "workers_dev": false,
+  "preview_urls": false,
+  "vars": {
+    "PUBLIC_URL": "https://tooling.cognitio.it",
+    "DEFAULT_NAMESPACE": "cognitio",
+    "IMMUTABLE_PREFIXES": ["archives/"],
+    "LEGACY_LAYOUT": "read",
+    "CACHE_TTL_SECONDS": "60",
+    "ADMIN_HOST": "tooling-admin.cognitio.it",
+    // The Access application's team domain, and its audience (the `admin_access_aud` output
+    // of ../iac).
+    "ACCESS_TEAM_DOMAIN": "REPLACE_ACCESS_TEAM_DOMAIN",
+    "ACCESS_AUD": "REPLACE_ACCESS_AUD"
+  },
+  "r2_buckets": [{ "binding": "FILES", "bucket_name": "tandem-tooling" }],
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "cognitio-tooling",
+      // The same placeholder as serve.wrangler.jsonc, filled the same way.
+      "database_id": "REPLACE_D1_DATABASE_ID",
+      "migrations_dir": "../cognitio-tooling/migrations"
+    }
+  ]
+}
