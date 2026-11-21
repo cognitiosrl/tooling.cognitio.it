@@ -23,8 +23,9 @@ const commit = (cwd, name) => {
   return git(cwd, "rev-parse", "HEAD");
 };
 
-// A root holding both checkouts. `tooling` and `registry` shape the checkouts after the
-// first commit; origin/aggrega is made to point at the registry's first commit.
+// A root holding both checkouts. `fn` shapes the checkouts after the first commit; origin/aggrega
+// is made to point at the registry's first commit. The root then records each checkout's HEAD
+// as its gitlink, as the install's commit does, and `after` shapes the checkouts once more.
 function root(arg) {
   const setup = typeof arg === "function" ? { fn: arg } : arg;
   const dir = realpathSync(mkdtempSync(resolve(tmpdir(), "pins-test-")));
@@ -47,6 +48,11 @@ function root(arg) {
     mkdirSync(registry);
   }
   setup.fn?.({ tooling, registry });
+  if (checkouts) {
+    git(dir, "-c", "advice.addEmbeddedRepo=false", "add", "cognitio-tooling", "serverless-registry");
+    git(dir, "commit", "-q", "-m", "pins");
+    setup.after?.({ tooling, registry });
+  }
   const run = () => spawnSync("bash", [script], { cwd: dir, encoding: "utf8" });
   return { dir, run };
 }
@@ -140,5 +146,31 @@ test("a tag that is not vX.Y.Z is refused", () => {
     assert.match(out.stderr, /cognitio-tooling is not exactly at a release tag vX\.Y\.Z/);
   } finally {
     rmSync(r.dir, { recursive: true, force: true });
+  }
+});
+
+test("a checkout that is not at the install's gitlink is refused, naming it", () => {
+  for (const which of ["cognitio-tooling", "serverless-registry"]) {
+    const r = root({
+      fn: ({ tooling }) => git(tooling, "tag", "v1.2.3"),
+      // The checkout moves to a commit that passes every other check.
+      after: ({ tooling, registry }) => {
+        if (which === "cognitio-tooling") {
+          commit(tooling, "two");
+          git(tooling, "tag", "v1.2.4");
+          git(tooling, "update-ref", "refs/remotes/origin/main", "HEAD");
+        } else {
+          commit(registry, "two");
+          git(registry, "update-ref", "refs/remotes/origin/aggrega", "HEAD");
+        }
+      },
+    });
+    try {
+      const out = r.run();
+      assert.equal(out.status, 1, which);
+      assert.match(out.stderr, new RegExp(`^check-pins: ${which} is at [0-9a-f]{40}, not at the install's pin [0-9a-f]{40}$`, "m"), which);
+    } finally {
+      rmSync(r.dir, { recursive: true, force: true });
+    }
   }
 });

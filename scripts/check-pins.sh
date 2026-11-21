@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # Checks the two pins before anything deploys. Run from the install's root, after both
-# checkouts: `cognitio-tooling` must be exactly at a release tag vX.Y.Z, and the
-# `serverless-registry` HEAD must be an ancestor of origin/aggrega. Prints both pins and
-# exits 0, or names the fault on stderr and exits 1.
+# checkouts: each checkout must be at the commit its gitlink in the install's HEAD names,
+# `cognitio-tooling` must be exactly at a release tag vX.Y.Z, and the `serverless-registry`
+# HEAD must be an ancestor of origin/aggrega. Prints both pins and exits 0, or names the
+# fault on stderr and exits 1.
 set -euo pipefail
 
 fail() {
@@ -15,13 +16,17 @@ registry=serverless-registry
 
 # A checkout's own top level must be the directory: git walks up, so a directory inside the
 # install's repository would otherwise pass for one. A change to a tracked file is refused
-# too, since the deploy bundles the working files.
+# too, since the deploy bundles the working files, and so is a checkout at any commit but
+# its gitlink's.
 for dir in "$tooling" "$registry"; do
   [[ -d $dir ]] || fail "$dir is not a git checkout (no such directory)"
   top=$(git -C "$dir" rev-parse --show-toplevel 2>/dev/null) || fail "$dir is not a git checkout"
   [[ $top == "$(cd "$dir" && pwd -P)" ]] || fail "$dir is not a git checkout (its repository is $top)"
   [[ -z $(git -C "$dir" status --porcelain --untracked-files=no) ]] ||
     fail "$dir has changes to tracked files; deploy a clean checkout"
+  at=$(git -C "$dir" rev-parse HEAD)
+  pin=$(git rev-parse --verify --quiet "HEAD:$dir") || fail "$dir has no gitlink in the install's HEAD"
+  [[ $at == "$pin" ]] || fail "$dir is at $at, not at the install's pin $pin"
 done
 
 # Every tag on the commit is judged: one matching tag is enough.

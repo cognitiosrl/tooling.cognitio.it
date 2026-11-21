@@ -261,6 +261,18 @@ test("a workflow reads secrets, step outputs and the environment only by name", 
   }
 });
 
+test("the pins are checked again after the tests, just before the D1 migrations", () => {
+  const names = deploy.steps.map((s) => s.name);
+  const d1 = names.indexOf("D1 migrations");
+  const lastTest = names.reduce((last, name, i) => (name.startsWith("Test ") ? i : last), -1);
+  const check = deploy.steps[d1 - 1];
+  assert.ok(d1 > 0 && lastTest >= 0);
+  assert.match(code(check), /^ {8}run: scripts\/check-pins\.sh$/m, `the step before D1 migrations is "${check.name}"`);
+  assert.ok(d1 - 1 > lastTest, "after every test step");
+  assert.doesNotMatch(check.text, /secrets\.|CLOUDFLARE|env:/);
+  assert.equal(stepsMentioning(deploy, /scripts\/check-pins\.sh/).length, 2);
+});
+
 test("the deploy takes the tag and the Worker names from their homes", () => {
   const checked = named(deploy, "Check the pins").text;
   assert.match(checked, /pins=\$\(scripts\/check-pins\.sh\)/);

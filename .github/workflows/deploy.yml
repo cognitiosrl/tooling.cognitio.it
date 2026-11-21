@@ -164,6 +164,12 @@ jobs:
           node scripts/fill-config.mjs workers/admin.wrangler.jsonc
           node scripts/fill-config.mjs workers/serve.wrangler.jsonc
 
+      # The installs and the tests ran code from the checkouts, so the pins are checked once more
+      # before anything is deployed from them.
+      - name: Check the pins again
+        if: ${{ inputs.plan_only != true }}
+        run: scripts/check-pins.sh
+
       - name: D1 migrations
         if: ${{ inputs.plan_only != true }}
         env:
