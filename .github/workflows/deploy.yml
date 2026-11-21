@@ -7,8 +7,11 @@
 #   COGNITIO_TOOLING_DEPLOY_KEY    Check out cognitio-tooling
 #   VERIFIER_KEY, CSRF_KEY         Write the secrets files (OpenTofu's masked step outputs)
 #   D1_DATABASE_ID, ACCESS_AUD     Fill the Wrangler configuration (OpenTofu's step outputs)
-# A push applies no infrastructure change (scripts/tofu.sh apply refuses any change without
-# --confirmed): a change to a gate is read in a plan_only run, then dispatched with infra_change_confirmed (and delete_confirmed for a delete or a replace).
+# A push applies an OpenTofu plan only when it changes nothing or only adds outputs:
+# scripts/tofu.sh apply refuses any resource change, and any change to or removal of an
+# existing output, without --confirmed. Such a plan is read in a plan_only run, then dispatched
+# with infra_change_confirmed, and also delete_confirmed for a delete, a replace, a forget or a
+# change to a sensitive output (a deployed key).
 
 name: deploy
 

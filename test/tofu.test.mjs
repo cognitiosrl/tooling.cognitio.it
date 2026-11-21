@@ -336,11 +336,40 @@ test('a forget counts as a delete', () => {
   assert.equal(called(r, 'apply').length, 0);
 });
 
-test('apply applies a plan that changes only outputs, without either flag', () => {
+test('apply applies a plan that only adds outputs, without either flag', () => {
   const { run } = setup();
   const r = run(['apply'], { STUB_PLAN_JSON: fixture('plan-outputs.json') });
   assert.equal(r.status, 0, r.out);
-  assert.match(r.stdout, /the plan changes only outputs: d1_database_id$/m);
+  assert.match(r.stdout, /the plan only adds outputs: d1_database_id$/m);
+  assert.equal(called(r, 'apply').length, 1);
+});
+
+test('a change to an existing output needs --confirmed', () => {
+  const { run } = setup();
+  const r = run(['apply'], { STUB_PLAN_JSON: fixture('plan-output-update.json') });
+  assert.equal(r.status, 1);
+  assert.match(r.stderr, /the plan changes or removes outputs:\n {2}output\.d1_database_id\n/);
+  assert.match(r.stderr, /apply refused; to allow it, pass --confirmed$/m);
+  assert.equal(called(r, 'apply').length, 0);
+  const { run: run2 } = setup();
+  const confirmed = run2(['apply', '--confirmed'], { STUB_PLAN_JSON: fixture('plan-output-update.json') });
+  assert.equal(confirmed.status, 0, confirmed.out);
+  assert.equal(called(confirmed, 'apply').length, 1);
+});
+
+test('a change to a sensitive output needs --confirmed --delete-confirmed', () => {
+  const plan = { STUB_PLAN_JSON: fixture('plan-output-key-update.json') };
+  for (const flags of [[], ['--confirmed']]) {
+    const { run } = setup();
+    const r = run(['apply', ...flags], plan);
+    assert.equal(r.status, 1, flags.join(' '));
+    assert.match(r.stderr, /the plan changes or removes sensitive outputs, replacing the keys deployed from them:\n {2}output\.verifier_key\n/, flags.join(' '));
+    assert.match(r.stderr, /apply refused; to allow it, pass --confirmed --delete-confirmed$/m, flags.join(' '));
+    assert.equal(called(r, 'apply').length, 0, flags.join(' '));
+  }
+  const { run } = setup();
+  const r = run(['apply', '--confirmed', '--delete-confirmed'], plan);
+  assert.equal(r.status, 0, r.out);
   assert.equal(called(r, 'apply').length, 1);
 });
 

@@ -1,0 +1,1 @@
+{"format_version":"1.2","resource_changes":[{"address":"random_bytes.verifier_key","change":{"actions":["no-op"]}}],"output_changes":{"d1_database_id":{"actions":["no-op"],"before_sensitive":false,"after_sensitive":false},"verifier_key":{"actions":["update"],"before_sensitive":true,"after_sensitive":true}}}

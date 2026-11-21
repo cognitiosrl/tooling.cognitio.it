@@ -6,12 +6,14 @@
 #       init, plan; changes nothing and takes no state lock (-lock=false), so
 #       a cancelled run never leaves the lock held.
 #   scripts/tofu.sh apply [--confirmed] [--delete-confirmed]
-#       init, plan, then apply. A plan that deletes, replaces or forgets (drops
-#       from the state) a resource is refused unless both --confirmed and
-#       --delete-confirmed are given; any other resource change (create,
-#       update, import) is refused unless --confirmed is given. A plan that
-#       changes only outputs is applied without either flag; a plan with no
-#       change applies nothing and exits 0.
+#       init, plan, then apply. Refused unless both --confirmed and
+#       --delete-confirmed are given: a plan that deletes, replaces or forgets
+#       (drops from the state) a resource, or that changes or removes a
+#       sensitive output (a key the deploy ships). Refused unless --confirmed
+#       is given: any other resource change (create, update, import) and any
+#       change to, or removal of, an existing output. A plan that only adds
+#       outputs is applied without either flag; a plan with no change applies
+#       nothing and exits 0.
 #   scripts/tofu.sh output --github-output <file>
 #       init, then write every output to <file> as NAME=value lines, the
 #       sensitive ones masked first. Only under GitHub Actions.
@@ -302,7 +304,8 @@ if [ "$ACTION" = plan ]; then
 fi
 
 # The plan JSON carries values (the sensitive ones too): it stays in $WORK and
-# only the resource addresses and the output names are read from it.
+# only the resource addresses, the output names and their sensitivity are read
+# from it.
 tofu show -json "$plan" >"$WORK/plan.json"
 changes="$(jq -r '.resource_changes[]?
   | select((.change.actions != ["no-op"] and .change.actions != ["read"]) or (.change.importing != null))
@@ -312,27 +315,50 @@ changes="$(jq -r '.resource_changes[]?
 deletes="$(jq -r '.resource_changes[]?
   | select(.change.actions | (index("delete") or index("forget")))
   | .address' "$WORK/plan.json")"
-outputs="$(jq -r '[.output_changes // {} | to_entries[] | select(.value.actions != ["no-op"]) | .key]
+# The deploy ships the outputs, the keys among them as the serving Worker's secrets. Adding
+# an output changes nothing deployed; changing or removing one is gated as a resource change,
+# and for a sensitive output as a delete, since it replaces the keys every credential is
+# verified with.
+added_outputs="$(jq -r '[.output_changes // {} | to_entries[] | select(.value.actions == ["create"]) | .key]
   | join(", ")' "$WORK/plan.json")"
+changed_outputs="$(jq -r '.output_changes // {} | to_entries[]
+  | select(.value.actions != ["no-op"] and .value.actions != ["create"])
+  | "output.\(.key)"' "$WORK/plan.json")"
+key_outputs="$(jq -r '.output_changes // {} | to_entries[]
+  | select(.value.actions != ["no-op"] and .value.actions != ["create"])
+  | select([.value.before_sensitive, .value.after_sensitive] | any(..; . == true))
+  | "output.\(.key)"' "$WORK/plan.json")"
 
-if [ -z "$changes" ]; then
-  if [ -z "$outputs" ]; then
+if [ -z "$changes" ] && [ -z "$changed_outputs" ]; then
+  if [ -z "$added_outputs" ]; then
     echo "tofu.sh: the plan has no changes; nothing applied"
     exit 0
   fi
-  # Applying it writes the outputs into the state and touches no resource.
-  echo "tofu.sh: the plan changes only outputs: $outputs"
+  # Applying it writes the new outputs into the state and touches no resource.
+  echo "tofu.sh: the plan only adds outputs: $added_outputs"
   tofu apply -input=false -no-color -lock-timeout=10m "$plan"
   exit 0
 fi
-if [ -n "$deletes" ] && [ "$DELETE_CONFIRMED" = 0 ]; then
-  echo "tofu.sh: the plan deletes, replaces or forgets:" >&2
-  list "$deletes"
+if [ "$DELETE_CONFIRMED" = 0 ] && { [ -n "$deletes" ] || [ -n "$key_outputs" ]; }; then
+  if [ -n "$deletes" ]; then
+    echo "tofu.sh: the plan deletes, replaces or forgets:" >&2
+    list "$deletes"
+  fi
+  if [ -n "$key_outputs" ]; then
+    echo "tofu.sh: the plan changes or removes sensitive outputs, replacing the keys deployed from them:" >&2
+    list "$key_outputs"
+  fi
   die 1 "apply refused; to allow it, pass --confirmed --delete-confirmed"
 fi
 if [ "$CONFIRMED" = 0 ]; then
-  echo "tofu.sh: the plan changes:" >&2
-  list "$changes"
+  if [ -n "$changes" ]; then
+    echo "tofu.sh: the plan changes:" >&2
+    list "$changes"
+  fi
+  if [ -n "$changed_outputs" ]; then
+    echo "tofu.sh: the plan changes or removes outputs:" >&2
+    list "$changed_outputs"
+  fi
   die 1 "apply refused; to allow it, pass --confirmed"
 fi
 
