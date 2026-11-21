@@ -25,18 +25,28 @@ const commit = (cwd, name) => {
 
 // A root holding both checkouts. `tooling` and `registry` shape the checkouts after the
 // first commit; origin/aggrega is made to point at the registry's first commit.
-function root(setup) {
+function root(arg) {
+  const setup = typeof arg === "function" ? { fn: arg } : arg;
   const dir = realpathSync(mkdtempSync(resolve(tmpdir(), "pins-test-")));
+  // The root is itself a repository, as the install is: git must not walk up into it.
+  git(dir, "init", "-q", "-b", "main");
+  commit(dir, "root");
   const tooling = resolve(dir, "cognitio-tooling");
   const registry = resolve(dir, "serverless-registry");
-  for (const repo of [tooling, registry]) {
-    mkdirSync(repo);
-    git(repo, "init", "-q", "-b", "main");
+  const checkouts = setup.checkouts ?? true;
+  if (checkouts) {
+    for (const repo of [tooling, registry]) {
+      mkdirSync(repo);
+      git(repo, "init", "-q", "-b", "main");
+    }
+    commit(tooling, "one");
+    const first = commit(registry, "one");
+    if (!setup.noOrigin) git(registry, "update-ref", "refs/remotes/origin/aggrega", first);
+  } else {
+    mkdirSync(tooling);
+    mkdirSync(registry);
   }
-  commit(tooling, "one");
-  const first = commit(registry, "one");
-  git(registry, "update-ref", "refs/remotes/origin/aggrega", first);
-  setup({ tooling, registry });
+  setup.fn?.({ tooling, registry });
   const run = () => spawnSync("bash", [script], { cwd: dir, encoding: "utf8" });
   return { dir, run };
 }
@@ -79,6 +89,55 @@ test("a registry pin off aggrega is refused", () => {
     const out = r.run();
     assert.equal(out.status, 1);
     assert.match(out.stderr, /serverless-registry .* is not an ancestor of origin\/aggrega/);
+  } finally {
+    rmSync(r.dir, { recursive: true, force: true });
+  }
+});
+
+test("an empty checkout directory is refused, naming it", () => {
+  const r = root({ checkouts: false });
+  try {
+    const out = r.run();
+    assert.equal(out.status, 1);
+    assert.match(out.stderr, /cognitio-tooling is not a git checkout \(its repository is /);
+  } finally {
+    rmSync(r.dir, { recursive: true, force: true });
+  }
+});
+
+test("a dirty checkout is refused, naming it", () => {
+  for (const which of ["tooling", "registry"]) {
+    const r = root(({ tooling, registry }) => {
+      git(tooling, "tag", "v1.2.3");
+      writeFileSync(resolve(which === "tooling" ? tooling : registry, "one"), "changed");
+    });
+    try {
+      const out = r.run();
+      assert.equal(out.status, 1);
+      assert.match(out.stderr, which === "tooling" ? /cognitio-tooling has changes to tracked files/ : /serverless-registry has changes to tracked files/);
+    } finally {
+      rmSync(r.dir, { recursive: true, force: true });
+    }
+  }
+});
+
+test("a registry checkout without origin/aggrega is refused", () => {
+  const r = root({ noOrigin: true, fn: ({ tooling }) => git(tooling, "tag", "v1.2.3") });
+  try {
+    const out = r.run();
+    assert.equal(out.status, 1);
+    assert.match(out.stderr, /serverless-registry has no origin\/aggrega/);
+  } finally {
+    rmSync(r.dir, { recursive: true, force: true });
+  }
+});
+
+test("a tag that is not vX.Y.Z is refused", () => {
+  const r = root(({ tooling }) => git(tooling, "tag", "v1.2.3-rc1"));
+  try {
+    const out = r.run();
+    assert.equal(out.status, 1);
+    assert.match(out.stderr, /cognitio-tooling is not exactly at a release tag vX\.Y\.Z/);
   } finally {
     rmSync(r.dir, { recursive: true, force: true });
   }

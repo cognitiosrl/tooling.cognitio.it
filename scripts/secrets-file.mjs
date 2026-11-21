@@ -7,7 +7,7 @@
 // script with exit 1, naming the file or the variable; nothing it did not create is removed.
 // No value is printed.
 
-import { closeSync, openSync, unlinkSync, writeSync } from "node:fs";
+import { closeSync, openSync, unlinkSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 
 function fail(message) {
@@ -35,7 +35,7 @@ try {
   fail(`cannot create ${out}: ${error.code}`);
 }
 try {
-  writeSync(fd, JSON.stringify(secrets));
+  writeFileSync(fd, JSON.stringify(secrets));
 } catch (error) {
   closeSync(fd);
   unlinkSync(out);

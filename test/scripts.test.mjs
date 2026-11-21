@@ -192,3 +192,31 @@ test("verify-deploy refuses while another version serves", () => {
     if (versions.some((v) => v.version_id === OTHER)) assert.ok(result.stderr.includes(OTHER), result.stderr);
   }
 });
+
+test("verify-deploy refuses malformed output, a missing deploy entry and an empty versions list", () => {
+  const dir = scratch();
+  try {
+    const status = resolve(dir, "status.json");
+    const ndjson = resolve(dir, "out.ndjson");
+    const go = () => run("verify-deploy.mjs", ["--wrangler-output", ndjson, "--deployment", status]);
+    writeFileSync(status, JSON.stringify(deployment([{ version_id: UPLOADED, percentage: 100 }])));
+
+    writeFileSync(ndjson, "{not json\n");
+    let result = go();
+    assert.equal(result.status, 1);
+    assert.equal(result.stderr.trim(), `verify-deploy: ${ndjson} has a line that is not JSON`);
+
+    writeFileSync(ndjson, JSON.stringify({ type: "wrangler-session", version: 1 }) + "\n");
+    result = go();
+    assert.equal(result.status, 1);
+    assert.equal(result.stderr.trim(), `verify-deploy: ${ndjson} has no deploy entry carrying a version_id`);
+
+    writeFileSync(ndjson, outputLines(UPLOADED));
+    writeFileSync(status, JSON.stringify(deployment([])));
+    result = go();
+    assert.equal(result.status, 1);
+    assert.equal(result.stderr.trim(), `verify-deploy: ${status} lists no versions`);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});

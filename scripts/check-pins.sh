@@ -13,8 +13,15 @@ fail() {
 tooling=cognitio-tooling
 registry=serverless-registry
 
+# A checkout's own top level must be the directory: git walks up, so a directory inside the
+# install's repository would otherwise pass for one. A change to a tracked file is refused
+# too, since the deploy bundles the working files.
 for dir in "$tooling" "$registry"; do
-  git -C "$dir" rev-parse --git-dir >/dev/null 2>&1 || fail "$dir is not a git checkout"
+  [[ -d $dir ]] || fail "$dir is not a git checkout (no such directory)"
+  top=$(git -C "$dir" rev-parse --show-toplevel 2>/dev/null) || fail "$dir is not a git checkout"
+  [[ $top == "$(cd "$dir" && pwd -P)" ]] || fail "$dir is not a git checkout (its repository is $top)"
+  [[ -z $(git -C "$dir" status --porcelain --untracked-files=no) ]] ||
+    fail "$dir has changes to tracked files; deploy a clean checkout"
 done
 
 # Every tag on the commit is judged: one matching tag is enough.
