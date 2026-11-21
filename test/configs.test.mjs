@@ -17,6 +17,7 @@ const parse = (path) => parseJsonc(read(path));
 const serve = parse("workers/serve.wrangler.jsonc");
 const admin = parse("workers/admin.wrangler.jsonc");
 const registry = parse("workers/registry.wrangler.jsonc");
+const filesWorker = parse("files/wrangler.jsonc");
 
 // The text of a variable's block in iac/variables.tf, from its declaration to the next one.
 function variableBlock(name) {
@@ -29,17 +30,19 @@ function variableBlock(name) {
 const stringDefault = (name) => variableBlock(name).match(/^\s*default\s*=\s*"([^"]*)"/m)?.[1];
 const objectDefault = (name, key) => variableBlock(name).match(new RegExp(`^\\s*${key}\\s*=\\s*"([^"]*)"`, "m"))?.[1];
 
-test("every configuration parses and its main and migrations_dir exist", () => {
+// Without routes Wrangler would serve a Worker on workers.dev, so each one turns it off.
+test("every configuration parses, has no workers.dev or preview URL and no route, and its main and migrations_dir exist", () => {
   for (const [file, config] of [
     ["workers/serve.wrangler.jsonc", serve],
     ["workers/admin.wrangler.jsonc", admin],
     ["workers/registry.wrangler.jsonc", registry],
+    ["files/wrangler.jsonc", filesWorker],
   ]) {
     assert.equal(config.workers_dev, false, file);
     assert.equal(config.preview_urls, false, file);
     assert.equal(config.routes, undefined, file);
     assert.equal(config.route, undefined, file);
-    assert.ok(existsSync(resolve(root, "workers", config.main)), `${file}: ${config.main}`);
+    assert.ok(existsSync(resolve(root, dirname(file), config.main)), `${file}: ${config.main}`);
   }
   assert.equal(serve.main, "../cognitio-tooling/src/serve.js");
   assert.equal(admin.main, "../cognitio-tooling/src/admin.js");
@@ -52,7 +55,7 @@ test("Worker names equal the OpenTofu defaults", () => {
   assert.equal(objectDefault("instance_worker_names", "serve"), serve.name);
   assert.equal(objectDefault("instance_worker_names", "admin"), admin.name);
   assert.equal(stringDefault("registry_worker_name"), registry.name);
-  assert.equal(stringDefault("files_worker_name"), parse("files/wrangler.jsonc").name);
+  assert.equal(stringDefault("files_worker_name"), filesWorker.name);
 });
 
 test("ADMIN_HOST equals admin_hostname", () => {
