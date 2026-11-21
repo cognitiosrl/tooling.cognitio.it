@@ -1,0 +1,8 @@
+{
+  "private": true,
+  "type": "module",
+  "description": "The files Worker on the tooling registry's host, and the script that publishes to it. ESM so the Worker loads as a module in both Wrangler and the local tests, which need nothing but Node.",
+  "scripts": {
+    "test": "node --test"
+  }
+}

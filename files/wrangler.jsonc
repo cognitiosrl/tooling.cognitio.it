@@ -1,0 +1,44 @@
+{
+  // The files Worker on the tooling hosts: it serves each publication's files from the
+  // tooling registry's R2 bucket to a consumer allowed that publication. See
+  // ./worker.js for the request rules and ../README.md for the operator's steps.
+  //
+  // No secrets live here. CONSUMERS (the consumer list) and the optional
+  // READONLY_USERNAME/READONLY_PASSWORD (the registry's read-only pair, allowed
+  // `tandemsdd`) are Worker secrets, set with `wrangler secret put`. The routes
+  // (<host>/<publication>/*, on each host) are owned by OpenTofu in ../iac/, not by
+  // this file, so no routes are declared here.
+  "name": "tandem-tooling-files",
+  "main": "./worker.js",
+  "compatibility_date": "2026-06-01",
+
+  // Served only on the OpenTofu-managed routes; no *.workers.dev URL.
+  "workers_dev": false,
+  "preview_urls": false,
+
+  // The registry Worker's bucket. Every key prefix starts with "_", which no OCI
+  // repository name can, so these objects never share a key with an image.
+  "r2_buckets": [{ "binding": "FILES", "bucket_name": "tandem-tooling" }],
+  "vars": {
+    // The publications routed one by one, on whichever host routes each: together, the
+    // lists in the `publications` map of ../iac/variables.tf name the same publications.
+    // A route without an entry here answers 404, and an entry without a route is never
+    // reached. The tests compare the two.
+    //
+    // A publication's files sit under `_files/<publication>/` unless keyPrefix names
+    // another; `tandemsdd` names `_marketplace/`, where its release workflow uploads.
+    // Paths under an `immutable` prefix are served as never changing, so a
+    // name there must carry its version; every other path, such as a module's
+    // `index.json` or `modules/install.sh`, is revalidated.
+    "PUBLICATIONS": {
+      "tandemsdd": { "keyPrefix": "_marketplace/", "immutable": ["archives/"] }
+    },
+    // The hosts routed whole, as `any_publication_hosts` in ../iac/variables.tf lists
+    // them; the tests compare the two. On such a host every publication name is a
+    // publication at `_files/<publication>/`, so a new site module is served once its
+    // release uploads it, with no change here and no deploy.
+    "ANY_PUBLICATION_HOSTS": {
+      "tooling.cognitio.it": { "immutable": ["archives/"] }
+    }
+  }
+}
