@@ -2,7 +2,7 @@
   "private": true,
   "type": "module",
   "devDependencies": {
-    "wrangler": "4.153.0"
+    "wrangler": "4.164.0"
   },
   "scripts": {
     "test": "node --test \"test/**/*.test.mjs\""
