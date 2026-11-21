@@ -7,6 +7,11 @@ resource "cloudflare_d1_database" "tooling" {
   name                  = "cognitio-tooling"
   primary_location_hint = "weur"
 
+  # The API returns this setting; left undeclared, every run would plan a change to null.
+  read_replication = {
+    mode = "disabled"
+  }
+
   lifecycle {
     prevent_destroy = true
   }

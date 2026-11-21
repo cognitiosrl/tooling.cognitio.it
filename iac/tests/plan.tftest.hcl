@@ -99,3 +99,15 @@ run "an_empty_email_list_fails_validation" {
 
   expect_failures = [var.access_allowed_emails]
 }
+
+run "the_d1_database_declares_the_read_replication_the_api_returns" {
+  command = plan
+  plan_options {
+    target = [cloudflare_d1_database.tooling]
+  }
+
+  assert {
+    condition     = cloudflare_d1_database.tooling.read_replication.mode == "disabled"
+    error_message = "the D1 database does not declare read_replication.mode as disabled"
+  }
+}
