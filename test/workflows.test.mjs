@@ -228,6 +228,17 @@ test("the smoke step holds no credential and checks the three public hosts", () 
   }
 });
 
+test("the smoke step checks the admin host's Access redirect", () => {
+  const smoke = named(deploy, "Smoke test the public hosts").text;
+  assert.ok(smoke.includes("https://tooling-admin.cognitio.it/"), "the admin URL");
+  assert.match(smoke, /^ {8}env:\n {10}ACCESS_TEAM_DOMAIN: \$\{\{ vars\.ACCESS_TEAM_DOMAIN \}\}$/m, "the team domain comes from the step's env");
+  assert.doesNotMatch(code({ text: smoke.split("run: |")[1] }), /\$\{\{/, "no expression inside run");
+  assert.match(smoke, /\$ACCESS_TEAM_DOMAIN|\$\{ACCESS_TEAM_DOMAIN/, "the comparison uses the env value");
+  assert.match(smoke, /Location|location/, "the redirect's Location is read");
+  assert.match(smoke, /for _ in \$\(seq 1 18\)/, "the admin check retries 18 times, ten seconds apart");
+  assert.match(smoke, /sleep 10/, "the retry waits ten seconds");
+});
+
 test("a run without secrets skips the steps that need them", () => {
   const flag = /^ {6}WITHOUT_SECRETS: \$\{\{ (.+) \}\}$/m.exec(plan.head);
   assert.ok(flag, "plan.yml states the condition once, in the job's env");

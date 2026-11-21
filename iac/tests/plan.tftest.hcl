@@ -20,6 +20,10 @@ run "admin_record_and_route_absent_while_admin_route_enabled_is_false" {
     target = [cloudflare_workers_route.admin, cloudflare_dns_record.admin, cloudflare_workers_route.any_publication]
   }
 
+  variables {
+    admin_route_enabled = false
+  }
+
   assert {
     condition     = length(cloudflare_dns_record.admin) == 0 && length(cloudflare_workers_route.admin) == 0
     error_message = "the admin record and route exist while admin_route_enabled is false"
@@ -30,10 +34,6 @@ run "admin_record_and_route_depend_on_the_access_application_when_enabled" {
   command = plan
   plan_options {
     target = [cloudflare_workers_route.admin, cloudflare_dns_record.admin, cloudflare_workers_route.any_publication]
-  }
-
-  variables {
-    admin_route_enabled = true
   }
 
   assert {

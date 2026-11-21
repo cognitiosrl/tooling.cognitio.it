@@ -80,9 +80,9 @@ variable "admin_hostname" {
 }
 
 variable "admin_route_enabled" {
-  description = "Whether the admin host's DNS record and route exist. Keep it false until the admin Worker holds the Access application's audience (output admin_access_aud), so the host is never routed to a Worker that cannot verify a token."
+  description = "Whether the admin host's DNS record and route exist. Set it false only to take the host offline: the route sends the host to the admin Worker, which holds the Access application's audience (output admin_access_aud) and verifies every token."
   type        = bool
-  default     = false
+  default     = true
 }
 
 variable "access_allowed_emails" {
