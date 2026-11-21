@@ -126,6 +126,13 @@ jobs:
           tofu_version_file: iac/.opentofu-version
           tofu_wrapper: false
 
+      # OpenTofu's own tests (iac/tests/) run with mock providers: no backend, no credential.
+      - name: Test the OpenTofu configuration
+        run: |
+          set -euo pipefail
+          tofu -chdir=iac init -backend=false -lockfile=readonly
+          tofu -chdir=iac test
+
       - name: OpenTofu apply
         id: tofu
         env:

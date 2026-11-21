@@ -234,7 +234,7 @@ test("a run without secrets skips the steps that need them", () => {
   assert.ok(flag[1].includes("github.event.pull_request.user.login == 'dependabot[bot]'"), "a reopened Dependabot pull request is still without secrets");
   assert.equal(plan.text.split("github.actor == 'dependabot[bot]'").length, 2, "the condition is written once");
   const skipped = /^ {8}if: \$\{\{ env\.WITHOUT_SECRETS != 'true' \}\}$/m;
-  for (const name of ["Read the pins", "Check out cognitio-tooling", "Check out serverless-registry", "Check the pins", "Test cognitio-tooling", "Test the install", "Set up OpenTofu", "OpenTofu plan"]) {
+  for (const name of ["Read the pins", "Check out cognitio-tooling", "Check out serverless-registry", "Check the pins", "Test cognitio-tooling", "Test the install", "OpenTofu plan"]) {
     assert.match(named(plan, name).text, skipped, name);
   }
   const without = named(plan, "Test the install without the checkouts").text;
@@ -247,6 +247,17 @@ test("a run without secrets skips the steps that need them", () => {
     if (!/working-directory: files/.test(step.text)) assert.doesNotMatch(code(step), /run: npm test/, step.name);
   }
   assert.match(named(plan, "OpenTofu plan").text, /scripts\/tofu\.sh plan/);
+});
+
+test("both workflows run OpenTofu's tests right after setting it up, with no credential", () => {
+  for (const workflow of both) {
+    const names = workflow.steps.map((s) => s.name);
+    const step = named(workflow, "Test the OpenTofu configuration");
+    assert.equal(names.indexOf(step.name), names.indexOf("Set up OpenTofu") + 1, workflow.file);
+    assert.match(code(step), /^ {10}tofu -chdir=iac init -backend=false -lockfile=readonly\n {10}tofu -chdir=iac test$/m, workflow.file);
+    assert.doesNotMatch(step.text, /secrets\.|CLOUDFLARE|env:|if:/, workflow.file);
+  }
+  assert.doesNotMatch(named(plan, "Set up OpenTofu").text, /if:/, "a run without secrets sets OpenTofu up too");
 });
 
 test("plan.yml runs for a pull request to main and cancels older runs", () => {
