@@ -45,7 +45,7 @@ variable "publications" {
 }
 
 variable "any_publication_hosts" {
-  description = "The hosts the files Worker serves whole, one route each at https://<host>/*, where every publication name is a publication: a site module is served there once its release uploads it, with no route or deploy of its own. Must name the same hosts as ANY_PUBLICATION_HOSTS in ../files/wrangler.jsonc, and none that var.publications lists or the registry's host."
+  description = "The hosts routed whole, one route each at https://<host>/*, to the Worker var.any_publication_worker_name names. Must name the same hosts as ANY_PUBLICATION_HOSTS in ../files/wrangler.jsonc, so the files Worker serves every publication name there whenever the routes name it, and none that var.publications lists or the registry's host."
   type        = list(string)
   default     = ["tooling.cognitio.it"]
 
@@ -56,9 +56,9 @@ variable "any_publication_hosts" {
 }
 
 variable "any_publication_worker_name" {
-  description = "Name of the Worker the any_publication_hosts routes send their host to. Null means var.files_worker_name; set it to the serving Worker's name in var.instance_worker_names to move the hosts to the cognitio-tooling instance."
+  description = "Name of the Worker the any_publication_hosts routes send their host to: the cognitio-tooling instance's serving Worker, the name in var.instance_worker_names.serve. Null, or var.files_worker_name, sends the hosts to the files Worker instead."
   type        = string
-  default     = null
+  default     = "cognitio-tooling"
 }
 
 variable "instance_worker_names" {

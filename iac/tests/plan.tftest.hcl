@@ -46,10 +46,26 @@ run "admin_record_and_route_depend_on_the_access_application_when_enabled" {
   }
 }
 
-run "the_any_publication_route_names_the_files_worker_by_default" {
+run "the_any_publication_route_names_the_serving_worker_by_default" {
   command = plan
   plan_options {
     target = [cloudflare_workers_route.admin, cloudflare_dns_record.admin, cloudflare_workers_route.any_publication]
+  }
+
+  assert {
+    condition     = cloudflare_workers_route.any_publication["tooling.cognitio.it"].script == "cognitio-tooling"
+    error_message = "the any-publication route does not name the serving Worker"
+  }
+}
+
+run "the_any_publication_route_names_the_files_worker_when_the_variable_says_so" {
+  command = plan
+  plan_options {
+    target = [cloudflare_workers_route.admin, cloudflare_dns_record.admin, cloudflare_workers_route.any_publication]
+  }
+
+  variables {
+    any_publication_worker_name = "tandem-tooling-files"
   }
 
   assert {
@@ -58,19 +74,19 @@ run "the_any_publication_route_names_the_files_worker_by_default" {
   }
 }
 
-run "the_any_publication_route_names_the_serving_worker_when_the_variable_says_so" {
+run "a_null_variable_routes_the_any_publication_host_to_the_files_worker" {
   command = plan
   plan_options {
     target = [cloudflare_workers_route.admin, cloudflare_dns_record.admin, cloudflare_workers_route.any_publication]
   }
 
   variables {
-    any_publication_worker_name = "cognitio-tooling"
+    any_publication_worker_name = null
   }
 
   assert {
-    condition     = cloudflare_workers_route.any_publication["tooling.cognitio.it"].script == "cognitio-tooling"
-    error_message = "the any-publication route does not name the serving Worker"
+    condition     = cloudflare_workers_route.any_publication["tooling.cognitio.it"].script == "tandem-tooling-files"
+    error_message = "a null any_publication_worker_name does not send the host to the files Worker"
   }
 }
 

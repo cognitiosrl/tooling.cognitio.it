@@ -2,7 +2,8 @@
 # binds the registry Worker to its host, a proxied DNS record for every other host,
 # one route per publication on each host that lists its publications, which sends
 # that path prefix of the host to the files Worker, and one route for the whole of
-# each host that serves any publication.
+# each host that serves any publication, which sends that host to the cognitio-tooling
+# serving Worker by default.
 #
 # The admin host of the cognitio-tooling instance sits behind a Cloudflare Access
 # application; its DNS record and route exist only once admin_route_enabled is true, and
@@ -32,8 +33,8 @@ locals {
   # and the custom domain provisions the registry host's; these need one of their own.
   route_only_hosts = setsubtract(setunion(keys(var.publications), var.any_publication_hosts), [var.registry_hostname])
 
-  # The Worker the any-publication routes name: the files Worker unless an instance
-  # Worker is named.
+  # The Worker the any-publication routes name: var.any_publication_worker_name, the
+  # instance's serving Worker by default, or the files Worker when it is null.
   any_publication_worker_name = coalesce(var.any_publication_worker_name, var.files_worker_name)
 }
 
@@ -57,7 +58,8 @@ resource "cloudflare_workers_custom_domain" "registry" {
 
 # A proxied record for each host that only routes reach. It points at 100::, the
 # IPv6 discard prefix, because no origin stands behind these hosts: a path with a
-# route is answered by the files Worker, and any other path reaches no Worker.
+# route is answered by the Worker that route names, and any other path reaches no
+# Worker.
 resource "cloudflare_dns_record" "files" {
   for_each = local.route_only_hosts
 
@@ -98,10 +100,13 @@ resource "cloudflare_workers_route" "files" {
   depends_on = [cloudflare_workers_custom_domain.registry, cloudflare_dns_record.files]
 }
 
-# Sends every path of each host that serves any publication to the files Worker, which
-# reads the host and serves every publication name there. Such a host is never the
-# registry's, whose other paths must still reach the registry, and never one that also
-# lists its publications, whose routes this one would make redundant.
+# Sends every path of each host that serves any publication to the Worker
+# local.any_publication_worker_name names: the cognitio-tooling serving Worker, which
+# resolves each path to a namespace and a module, unless the variable is null or names
+# the files Worker, which serves every publication name there. The files Worker keeps
+# tooling.aggrega.ai/tandemsdd/* through the routes above either way. Such a host is
+# never the registry's, whose other paths must still reach the registry, and never one
+# that also lists its publications, whose routes this one would make redundant.
 resource "cloudflare_workers_route" "any_publication" {
   for_each = toset(var.any_publication_hosts)
 
