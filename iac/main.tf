@@ -127,10 +127,9 @@ resource "cloudflare_workers_route" "any_publication" {
   depends_on = [cloudflare_dns_record.files]
 }
 
-# A state written by the single-route configuration holds the tandemsdd route at
-# cloudflare_workers_route.plugins, and one written by the one-host configuration
-# holds it at files["tandemsdd"]. The moves carry it to its "<host>/<publication>"
-# address, so it is kept, updated in place, rather than destroyed and created again.
+# A state that holds the tandemsdd route at cloudflare_workers_route.plugins is carried
+# to files["tandemsdd"], and from there to its "<host>/<publication>" address, so the
+# route is updated in place rather than destroyed and created again.
 moved {
   from = cloudflare_workers_route.plugins
   to   = cloudflare_workers_route.files["tandemsdd"]
