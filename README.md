@@ -94,6 +94,7 @@ host and 200 on the other:
   secret, which the registry would not know), so the customer is imported again:
   `cognitio-tooling customer remove <read-only user>`, `cognitio-tooling import-consumers consumers.htpasswd`
   (it creates only the missing login), then `cognitio-tooling credential expires <read-only user> imported never`.
+  Run the three back to back: between the removal and the import the pair answers 401 on the serving Worker's host.
 
 Neither registry password may contain `,` or `|`, which the devcontainer CLI's credential variable cannot carry.
 
