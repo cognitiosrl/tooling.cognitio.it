@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -19,7 +19,9 @@ const KEY = 'cognitio-tooling/tooling.cognitio.it/terraform.tfstate';
 
 // Each call is logged as a CALL line (the arguments after any -chdir) followed by what the
 // call saw: its working directory, the files there, its environment, the plain state's mode
-// and the encryption config, base64.
+// and the encryption config, base64. A migration that succeeds leaves a marker beside the log;
+// state list then answers STUB_MIGRATED_LIST (a resource unless it is set) instead of
+// STUB_STATE_LIST or STUB_STATE_LIST_ERROR (exit status STUB_STATE_LIST_STATUS, else 1).
 const STUB_TOFU = `#!/usr/bin/env bash
 case "$1" in -chdir=*) cd "\${1#-chdir=}" || exit 1; shift ;; esac
 {
@@ -28,20 +30,24 @@ case "$1" in -chdir=*) cd "\${1#-chdir=}" || exit 1; shift ;; esac
   printf 'FILES\\t%s\\n' "$(ls -A | LC_ALL=C sort | tr '\\n' ' ')"
   for v in AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_ENDPOINT_URL_S3 TF_IN_AUTOMATION \\
            TF_VAR_account_id TF_VAR_zone_ids TF_VAR_access_idp_id TF_VAR_access_allowed_emails \\
-           TF_VAR_admin_service_token_id TF_VAR_state_passphrase; do
+           TF_VAR_admin_service_token_id TF_VAR_state_passphrase \\
+           TF_DATA_DIR TF_WORKSPACE TF_CLI_ARGS TF_CLI_ARGS_init TF_CLI_ARGS_plan; do
     printf 'ENV\\t%s=%s\\n' "$v" "\${!v-<unset>}"
   done
   if [ -e terraform.tfstate ]; then printf 'STATE\\tmode=%s\\n' "$(stat -c %a terraform.tfstate)"; fi
   if [ -e encryption.tf ]; then printf 'ENC\\t%s\\n' "$(base64 -w0 encryption.tf)"; fi
 } >>"$STUB_LOG"
 case "$1" in
-  init) case " $* " in *' -migrate-state '*)
+  init) [ -z "\${STUB_INIT_FAIL:-}" ] || { echo "init: no such bucket" >&2; exit 1; }
+        case " $* " in *' -migrate-state '*)
           touch terraform.tfstate.backup
-          [ -z "\${STUB_MIGRATE_FAIL:-}" ] || { echo "init: migration failed" >&2; exit 1; } ;;
-        esac
-        [ -z "\${STUB_INIT_FAIL:-}" ] || { echo "init: no such bucket" >&2; exit 1; } ;;
-  state) if [ "$2" = list ]; then
-           [ -z "\${STUB_STATE_LIST_ERROR:-}" ] || { printf 'Error: %s\\n' "$STUB_STATE_LIST_ERROR" >&2; exit 1; }
+          [ -z "\${STUB_MIGRATE_FAIL:-}" ] || { echo "init: migration failed" >&2; exit 1; }
+          touch "$STUB_LOG.migrated" ;;
+        esac ;;
+  state) if [ "$2" = list ] && [ -e "$STUB_LOG.migrated" ]; then
+           [ -z "\${STUB_MIGRATED_LIST-x}" ] || printf '%s\\n' "\${STUB_MIGRATED_LIST-cloudflare_workers_custom_domain.registry}"
+         elif [ "$2" = list ]; then
+           [ -z "\${STUB_STATE_LIST_ERROR:-}" ] || { printf 'Error: %s\\n' "$STUB_STATE_LIST_ERROR" >&2; exit "\${STUB_STATE_LIST_STATUS:-1}"; }
            [ -z "\${STUB_STATE_LIST:-}" ] || printf '%s\\n' "$STUB_STATE_LIST"
          fi ;;
   plan) for a in "$@"; do case "$a" in -out=*) echo plan >"\${a#-out=}" ;; esac; done ;;
@@ -97,6 +103,7 @@ function setup() {
   const log = join(dir, 'stub.log');
   writeFileSync(log, '');
   const run = (args, env = {}, { withInputs = true, cwd } = {}) => {
+    rmSync(`${log}.migrated`, { force: true });
     const r = spawnSync('bash', [join(dir, 'scripts', 'tofu.sh'), ...args], {
       encoding: 'utf8',
       cwd,
@@ -524,8 +531,8 @@ test('migrate-state first lists the bucket\'s state with the committed encryptio
   const iac = join(dir, 'iac');
   const r = run(['migrate-state', plainState(dir)]);
   assert.equal(r.status, 0, r.out);
-  assert.equal(r.records.length, 3, r.calls.join('\n'));
-  const [check, list, migration] = r.records;
+  assert.equal(r.records.length, 4, r.calls.join('\n'));
+  const [check, list, migration, readBack] = r.records;
   assert.match(check.call, /^init /);
   assert.doesNotMatch(check.call, /-migrate-state/);
   assert.ok(check.call.includes(`-backend-config=bucket=${BUCKET}`) && check.call.includes(`-backend-config=key=${KEY}`));
@@ -536,6 +543,9 @@ test('migrate-state first lists the bucket\'s state with the committed encryptio
   assert.equal(check.enc, readFileSync(join(iacDir, 'encryption.tf'), 'utf8'));
   assert.equal(check.state, undefined, 'the check\'s copy holds no plain state');
   assert.match(migration.call, /-migrate-state/);
+  // The migration is read back in the check's copy, with iac/encryption.tf.
+  assert.match(readBack.call, /^state list\b/);
+  assert.equal(readBack.cwd, check.cwd);
 });
 
 test('migrate-state refuses a bucket whose state holds a resource, naming the bucket and key', () => {
@@ -552,6 +562,35 @@ test('migrate-state proceeds when the bucket holds no state under the key', () =
   const r = run(['migrate-state', plainState(dir)], { STUB_STATE_LIST_ERROR: 'No state file was found' });
   assert.equal(r.status, 0, r.out);
   assert.equal(migrations(r).length, 1);
+});
+
+test('migrate-state reads "No state file was found" as an absent key only with exit status 1', () => {
+  const { dir, run } = setup();
+  const r = run(['migrate-state', plainState(dir)], { STUB_STATE_LIST_ERROR: 'No state file was found', STUB_STATE_LIST_STATUS: '2' });
+  assert.equal(r.status, 1);
+  assert.ok(r.stderr.includes(`tofu state list failed for bucket ${BUCKET}, key ${KEY}`), r.stderr);
+  assert.equal(migrations(r).length, 0);
+});
+
+test('migrate-state exits 1 when the bucket\'s state lists no resource after the migration', () => {
+  const { dir, run } = setup();
+  const r = run(['migrate-state', plainState(dir)], { STUB_MIGRATED_LIST: '' });
+  assert.equal(r.status, 1);
+  assert.equal(migrations(r).length, 1);
+  assert.ok(r.stderr.includes(`bucket ${BUCKET}, key ${KEY} lists no resource after the migration; nothing was migrated`), r.stderr);
+});
+
+test('OpenTofu settings in the environment never reach tofu', () => {
+  const settings = { TF_DATA_DIR: '/tmp/shared-data-dir', TF_WORKSPACE: 'other', TF_CLI_ARGS: '-no-color', TF_CLI_ARGS_init: '-upgrade', TF_CLI_ARGS_plan: '-refresh=false' };
+  for (const args of [['plan'], ['migrate-state', 'plain.tfstate']]) {
+    const { dir, run } = setup();
+    plainState(dir);
+    const r = run(args, settings, { cwd: dir });
+    assert.equal(r.status, 0, r.out);
+    const seen = r.lines.filter(([k, v]) => k === 'ENV' && Object.keys(settings).includes(v.slice(0, v.indexOf('='))));
+    assert.equal(seen.length, Object.keys(settings).length * r.calls.length, args[0]);
+    for (const [, v] of seen) assert.match(v, /=<unset>$/, `${args[0]}: ${v}`);
+  }
 });
 
 test('migrate-state refuses a bucket whose state cannot be listed, naming the bucket and key', () => {

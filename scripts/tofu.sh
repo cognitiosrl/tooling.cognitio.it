@@ -27,7 +27,8 @@
 #       it, is removed on exit. Before it, tofu state list reads the bucket's
 #       state under the install's key, with iac/encryption.tf, in a second
 #       copy: a state holding any resource, or one that cannot be read, is
-#       refused and nothing is migrated.
+#       refused and nothing is migrated. After it, the same read must list a
+#       resource, or the run exits 1.
 #
 # Inputs come from the environment only:
 #   CLOUDFLARE_API_TOKEN, CLOUDFLARE_ACCOUNT_ID, TOFU_STATE_BUCKET,
@@ -37,9 +38,17 @@
 #
 # Exit status: 2 for usage, missing inputs, a refusal by the environment or a
 # bucket that already holds a state with resources; 1 for a plan refused by a
-# confirmation gate, a failed init, a bucket state that cannot be listed or a
-# token that no tokens/verify endpoint accepts.
+# confirmation gate, a failed init, a bucket state that cannot be listed or
+# lists no resource after a migration, or a token that no tokens/verify
+# endpoint accepts.
 set -euo pipefail
+
+# OpenTofu settings a shell may carry are dropped, so a run reads only the inputs above: a
+# data directory (TF_DATA_DIR) shared by migrate-state's two copies would record the backend
+# for both, a workspace (TF_WORKSPACE) would select another state, and TF_CLI_ARGS and
+# TF_CLI_ARGS_<command> would add arguments to the commands below.
+unset TF_DATA_DIR TF_WORKSPACE
+while IFS= read -r name; do unset "$name"; done < <(compgen -v TF_CLI_ARGS || true)
 
 # The state bucket's R2 endpoint for the default jurisdiction; the eu
 # jurisdiction uses https://$CLOUDFLARE_ACCOUNT_ID.eu.r2.cloudflarestorage.com.
@@ -229,6 +238,21 @@ terraform {
 HCL
 }
 
+# Lists the addresses in the bucket's state under the install's key into $WORK/addresses,
+# read in the copy $check with iac/encryption.tf. An absent key, which tofu state list
+# reports by exiting 1 with "No state file was found" and printing nothing, lists nothing.
+# Any other failure prints tofu's error and returns 1.
+bucket_state() {
+  local status=0
+  tofu -chdir="$check" state list -no-color >"$WORK/addresses" 2>"$WORK/state-list.err" || status=$?
+  [ "$status" != 0 ] || return 0
+  if [ "$status" = 1 ] && [ ! -s "$WORK/addresses" ] && grep -q 'No state file was found' "$WORK/state-list.err"; then
+    return 0
+  fi
+  cat "$WORK/state-list.err" >&2
+  return 1
+}
+
 if [ "$ACTION" = migrate-state ]; then
   # init -migrate-state -force-copy replaces whatever state the key holds, so a state that
   # holds any resource is refused first. tofu state list reads it with iac/encryption.tf, in
@@ -237,14 +261,8 @@ if [ "$ACTION" = migrate-state ]; then
   copy_iac "$check"
   tofu -chdir="$check" "${init_args[@]}" ||
     die 1 "tofu init failed for bucket $TOFU_STATE_BUCKET, key $STATE_KEY"
-  if ! tofu -chdir="$check" state list -no-color >"$WORK/addresses" 2>"$WORK/state-list.err"; then
-    # The one failure that means the key holds no state at all.
-    grep -q 'No state file was found' "$WORK/state-list.err" || {
-      cat "$WORK/state-list.err" >&2
-      die 1 "tofu state list failed for bucket $TOFU_STATE_BUCKET, key $STATE_KEY; nothing was migrated"
-    }
-    : >"$WORK/addresses"
-  fi
+  bucket_state ||
+    die 1 "tofu state list failed for bucket $TOFU_STATE_BUCKET, key $STATE_KEY; nothing was migrated"
   if [ -s "$WORK/addresses" ]; then
     echo "tofu.sh: the state already in the bucket holds:" >&2
     list "$(cat "$WORK/addresses")"
@@ -257,6 +275,13 @@ if [ "$ACTION" = migrate-state ]; then
   install -m 600 "$STATE_FILE" "$migration/terraform.tfstate"
   tofu -chdir="$migration" "${init_args[@]}" -lock-timeout=10m -migrate-state -force-copy ||
     die 1 "tofu init -migrate-state failed for bucket $TOFU_STATE_BUCKET, key $STATE_KEY"
+
+  # init can exit 0 having copied nothing, so the migration counts only once the bucket's
+  # state, read back with iac/encryption.tf, lists a resource.
+  bucket_state ||
+    die 1 "tofu state list failed for bucket $TOFU_STATE_BUCKET, key $STATE_KEY after the migration"
+  [ -s "$WORK/addresses" ] ||
+    die 1 "bucket $TOFU_STATE_BUCKET, key $STATE_KEY lists no resource after the migration; nothing was migrated"
   exit 0
 fi
 
