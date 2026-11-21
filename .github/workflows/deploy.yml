@@ -219,6 +219,12 @@ jobs:
           set -euo pipefail
           npx wrangler deploy --config workers/serve.filled.jsonc --secrets-file "$RUNNER_TEMP/serve-secrets.json" --message "$MESSAGE"
 
+      # The admin and serve deploys above are the last steps that read the secrets files, so the
+      # files are removed here, before any later step runs, whether or not the steps before passed.
+      - name: Remove the secrets files
+        if: ${{ always() }}
+        run: rm -f "$RUNNER_TEMP/serve-secrets.json" "$RUNNER_TEMP/admin-secrets.json"
+
       - name: Set up pnpm
         if: ${{ inputs.plan_only != true }}
         uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6.1.1
@@ -253,10 +259,6 @@ jobs:
         run: |
           set -euo pipefail
           npx wrangler deploy --config files/wrangler.jsonc --message "$MESSAGE"
-
-      - name: Remove the secrets files
-        if: ${{ always() }}
-        run: rm -f "$RUNNER_TEMP/serve-secrets.json" "$RUNNER_TEMP/admin-secrets.json"
 
       - name: Verify the deployments
         if: ${{ inputs.plan_only != true }}

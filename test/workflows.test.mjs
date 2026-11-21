@@ -102,11 +102,15 @@ test("COGNITIO_TOOLING_DEPLOY_KEY appears only in the cognitio-tooling checkout"
   }
 });
 
-test("the secrets files are removed in an always() step", () => {
+test("the secrets files are removed in an always() step, right after the last deploy that reads them", () => {
   const writer = deploy.steps.findIndex((step) => step.name === "Write the secrets files");
   const remover = deploy.steps.findIndex((step) => step.name === "Remove the secrets files");
-  const lastDeploy = deploy.steps.map((s) => s.name.startsWith("Deploy ")).lastIndexOf(true);
-  assert.ok(writer >= 0 && remover > lastDeploy && lastDeploy > writer, "order: write, deploys, remove");
+  const serve = deploy.steps.findIndex((step) => step.name === "Deploy the serve Worker");
+  assert.ok(writer >= 0 && serve > writer, "order: write, then the deploys");
+  assert.equal(remover, serve + 1, "the remover is the step after Deploy the serve Worker");
+  for (const [at, step] of deploy.steps.entries()) {
+    if (/secrets\.json/.test(code(step))) assert.ok(at >= writer && at <= remover, `${step.name} reads a secrets file outside write..remove`);
+  }
   const step = deploy.steps[remover];
   assert.match(step.text, /^ {8}if: \$\{\{ always\(\) \}\}$/m);
   assert.match(step.text, /rm -f .*serve-secrets\.json.*admin-secrets\.json|rm -f .*admin-secrets\.json.*serve-secrets\.json/);
