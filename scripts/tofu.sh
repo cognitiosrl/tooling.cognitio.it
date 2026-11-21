@@ -33,8 +33,6 @@ R2_ENDPOINT_SUFFIX="r2.cloudflarestorage.com"
 STATE_KEY="cognitio-tooling/tooling.cognitio.it/terraform.tfstate"
 API="https://api.cloudflare.com/client/v4"
 
-IAC="$(cd "$(dirname "${BASH_SOURCE[0]}")/../iac" && pwd)"
-
 usage() {
   cat <<'USAGE'
 usage:
@@ -53,10 +51,22 @@ die() {
   exit "$status"
 }
 
+# A path argument is made absolute before the script changes directory.
+absolute() { case "$1" in /*) printf '%s' "$1" ;; *) printf '%s/%s' "$PWD" "$1" ;; esac; }
+
 on_actions() { [ "${GITHUB_ACTIONS:-}" = true ]; }
 
 # Under GitHub Actions the value is masked in the log from here on.
-mask() { if on_actions; then printf '::add-mask::%s\n' "$1"; fi; }
+# The data is escaped as the Actions runner expects (%, CR, LF).
+mask() {
+  if on_actions; then
+    local data="$1"
+    data="${data//'%'/%25}"
+    data="${data//$'\r'/%0D}"
+    data="${data//$'\n'/%0A}"
+    printf '::add-mask::%s\n' "$data"
+  fi
+}
 
 ACTION="${1:-}"
 case "$ACTION" in
@@ -75,18 +85,20 @@ while [ "$#" -gt 0 ]; do
     apply:--delete-confirmed) DELETE_CONFIRMED=1 ;;
     output:--github-output)
       [ "$#" -ge 2 ] || die 2 "--github-output needs a file"
-      GITHUB_OUTPUT_FILE="$2"
+      GITHUB_OUTPUT_FILE="$(absolute "$2")"
       shift
       ;;
     migrate-state:-*) usage >&2; exit 2 ;;
     migrate-state:*)
       [ -z "$STATE_FILE" ] || { usage >&2; exit 2; }
-      STATE_FILE="$1"
+      STATE_FILE="$(absolute "$1")"
       ;;
     *) usage >&2; exit 2 ;;
   esac
   shift
 done
+
+IAC="$(cd "$(dirname "${BASH_SOURCE[0]}")/../iac" && pwd)"
 
 if [ "$DELETE_CONFIRMED" = 1 ] && [ "$CONFIRMED" = 0 ]; then
   die 2 "--delete-confirmed requires --confirmed"
@@ -94,7 +106,7 @@ fi
 
 case "$ACTION" in
   output)
-    on_actions || die 2 "output writes a GitHub Actions step output and prints no value; by hand, run tofu -chdir=iac output yourself"
+    on_actions || die 2 "output writes a GitHub Actions step output and prints no value"
     [ -n "$GITHUB_OUTPUT_FILE" ] || die 2 "output needs --github-output <file>"
     ;;
   migrate-state)
@@ -105,6 +117,8 @@ case "$ACTION" in
       die 2 "iac/.terraform/terraform.tfstate exists: a backend is already initialised and init -migrate-state would copy nothing; remove iac/.terraform and run again"
     [ ! -e "$IAC/terraform.tfstate" ] ||
       die 2 "iac/terraform.tfstate already exists and is never overwritten; move it away and run again"
+    [ ! -e "$IAC/terraform.tfstate.backup" ] ||
+      die 2 "iac/terraform.tfstate.backup already exists; move it away and run again"
     ;;
 esac
 
@@ -124,11 +138,16 @@ if [ "$ACTION" != migrate-state ]; then
   TF_VAR_zone_ids="$(jq -ec 'select(type == "object")' <<<"$CLOUDFLARE_ZONE_IDS" 2>/dev/null)" ||
     die 2 "CLOUDFLARE_ZONE_IDS must be a JSON object (hostname to zone id)"
   # "a@x, b@y" -> ["a@x","b@y"]
-  TF_VAR_access_allowed_emails="$(jq -cn --arg s "$ACCESS_ALLOWED_EMAILS" \
-    '$s | split(",") | map(gsub("^\\s+|\\s+$"; "")) | map(select(. != ""))')"
+  # Read from the environment inside jq, never from its argument list.
+  export ACCESS_ALLOWED_EMAILS
+  TF_VAR_access_allowed_emails="$(jq -cn \
+    '$ENV.ACCESS_ALLOWED_EMAILS | split(",") | map(gsub("^\\s+|\\s+$"; "")) | map(select(. != ""))')"
   export TF_VAR_access_idp_id="$ACCESS_IDP_ID"
   export TF_VAR_admin_service_token_id="$ADMIN_SERVICE_TOKEN_ID"
   export TF_VAR_zone_ids TF_VAR_access_allowed_emails
+  if on_actions; then
+    while IFS= read -r address; do mask "$address"; done < <(jq -r '.[]' <<<"$TF_VAR_access_allowed_emails")
+  fi
 fi
 export TF_IN_AUTOMATION=1
 
@@ -136,14 +155,14 @@ WORK="$(mktemp -d)"
 COPIED_STATE=""
 cleanup() {
   rm -rf "$WORK"
-  if [ -n "$COPIED_STATE" ]; then rm -f "$COPIED_STATE"; fi
+  if [ -n "$COPIED_STATE" ]; then rm -f "$COPIED_STATE" "$COPIED_STATE.backup"; fi
 }
 trap cleanup EXIT
 
 # The token travels to curl on stdin, never in an argument list.
 verify_token_id() {
   printf 'Authorization: Bearer %s\n' "$CLOUDFLARE_API_TOKEN" |
-    curl --silent --fail --max-time 30 --header @- "$1" 2>/dev/null |
+    curl --silent --show-error --fail --max-time 30 --header @- "$1" |
     jq -er '.result.id | select(type == "string" and . != "")' 2>/dev/null
 }
 
@@ -170,7 +189,7 @@ init_args=(init -input=false -lockfile=readonly
 if [ "$ACTION" = migrate-state ]; then
   install -m 600 "$STATE_FILE" "$IAC/terraform.tfstate"
   COPIED_STATE="$IAC/terraform.tfstate"
-  tofu "${init_args[@]}" -migrate-state -force-copy ||
+  tofu "${init_args[@]}" -lock-timeout=10m -migrate-state -force-copy ||
     die 1 "tofu init -migrate-state failed for bucket $TOFU_STATE_BUCKET, key $STATE_KEY"
   exit 0
 fi
@@ -180,9 +199,11 @@ tofu "${init_args[@]}" ||
 
 if [ "$ACTION" = output ]; then
   tofu output -json >"$WORK/outputs.json"
-  mapfile -t names < <(jq -r 'keys[]' "$WORK/outputs.json")
+  names_text="$(jq -r 'keys[]' "$WORK/outputs.json")"
+  mapfile -t names <<<"$names_text"
   lines=()
   for name in "${names[@]}"; do
+    [ -n "$name" ] || continue
     if jq -e --arg n "$name" '.[$n].value | (if type == "string" then . else tojson end) | contains("\n")' \
       "$WORK/outputs.json" >/dev/null; then
       die 1 "output $name has a value with a newline, which a step output cannot carry"

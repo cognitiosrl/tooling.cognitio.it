@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, statSync, writeFileSync } from 'node:fs';
+import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -28,7 +28,8 @@ const STUB_TOFU = `#!/usr/bin/env bash
   if [ -e terraform.tfstate ]; then printf 'STATE\\tmode=%s\\n' "$(stat -c %a terraform.tfstate)"; fi
 } >>"$STUB_LOG"
 case "$1" in
-  init) [ -z "\${STUB_INIT_FAIL:-}" ] || { echo "init: no such bucket" >&2; exit 1; } ;;
+  init) case " $* " in *' -migrate-state '*) touch terraform.tfstate.backup ;; esac
+        [ -z "\${STUB_INIT_FAIL:-}" ] || { echo "init: no such bucket" >&2; exit 1; } ;;
   plan) for a in "$@"; do case "$a" in -out=*) echo plan >"\${a#-out=}" ;; esac; done ;;
   show) cat "$STUB_PLAN_JSON" ;;
   output) cat "$STUB_OUTPUT_JSON" ;;
@@ -76,9 +77,10 @@ function setup() {
   }
   const log = join(dir, 'stub.log');
   writeFileSync(log, '');
-  const run = (args, env = {}, { withInputs = true } = {}) => {
+  const run = (args, env = {}, { withInputs = true, cwd } = {}) => {
     const r = spawnSync('bash', [join(dir, 'scripts', 'tofu.sh'), ...args], {
       encoding: 'utf8',
+      cwd,
       env: {
         PATH: `${join(dir, 'bin')}:/usr/local/bin:/usr/bin:/bin`,
         HOME: dir,
@@ -225,11 +227,13 @@ test('ACCESS_ALLOWED_EMAILS becomes a JSON list, spaces trimmed, empties dropped
   assert.equal(r.envs.TF_VAR_access_allowed_emails, '["a@example.test","b@example.test"]');
 });
 
-test('plan changes nothing and prints no plan JSON', () => {
+test('plan runs no apply and reads no plan JSON', () => {
   const { run } = setup();
   const r = run(['plan'], { STUB_PLAN_JSON: fixture('plan-create.json') });
   assert.equal(r.status, 0, r.out);
   assert.equal(called(r, 'apply').length, 0);
+  assert.equal(called(r, 'show').length, 0);
+  assert.ok(!r.out.includes('format_version'));
 });
 
 test('apply applies nothing and exits 0 on an empty plan', () => {
@@ -244,7 +248,9 @@ test('apply without --confirmed refuses a create, naming the address', () => {
   const { run } = setup();
   const r = run(['apply'], { STUB_PLAN_JSON: fixture('plan-create.json') });
   assert.equal(r.status, 1);
-  assert.match(r.stderr, /^ {2}cloudflare_d1_database\.tooling$/m);
+  assert.match(r.stderr, /the plan changes:\n {2}cloudflare_d1_database\.tooling\n/);
+  assert.match(r.stderr, /apply refused; to allow it, pass --confirmed$/m);
+  assert.ok(!r.stderr.includes('deletes or replaces'));
   assert.equal(called(r, 'apply').length, 0);
 });
 
@@ -252,7 +258,9 @@ test('apply without --confirmed refuses an import', () => {
   const { run } = setup();
   const r = run(['apply'], { STUB_PLAN_JSON: fixture('plan-import.json') });
   assert.equal(r.status, 1);
-  assert.match(r.stderr, /^ {2}cloudflare_r2_bucket\.tooling$/m);
+  assert.match(r.stderr, /the plan changes:\n {2}cloudflare_r2_bucket\.tooling\n/);
+  assert.match(r.stderr, /apply refused; to allow it, pass --confirmed$/m);
+  assert.ok(!r.stderr.includes('deletes or replaces'));
   assert.equal(called(r, 'apply').length, 0);
 });
 
@@ -337,7 +345,6 @@ test('output prints no value outside GitHub Actions', () => {
   const r = run(['output', '--github-output', join(dir, 'gh-output')]);
   assert.equal(r.status, 2);
   assert.match(r.stderr, /GitHub Actions step output/);
-  assert.match(r.stderr, /tofu -chdir=iac output/);
   for (const v of ['aud-made-up-0001', 'csrf-made-up-key', 'd1-made-up-id', 'verifier-made-up-key']) {
     assert.ok(!r.out.includes(v));
   }
@@ -377,7 +384,7 @@ test('migrate-state copies with mode 600 and removes the copy', () => {
   const { dir, run } = setup();
   const env = Object.fromEntries(Object.entries(inputs()).filter(([k]) => migrateInputs.includes(k)));
   const r = run(['migrate-state', plainState(dir)], {}, { withInputs: false });
-  assert.equal(r.status, 2, 'only the four inputs are required, the others are not');
+  assert.equal(r.status, 2, 'without the four inputs migrate-state exits 2');
   const r2 = run(['migrate-state', plainState(dir)], env, { withInputs: false });
   assert.equal(r2.status, 0, r2.out);
   const init = called(r2, 'init');
@@ -409,4 +416,91 @@ test('migrate-state refuses to overwrite iac/terraform.tfstate', () => {
   assert.match(r.stderr, /iac\/terraform\.tfstate/);
   assert.equal(readFileSync(join(dir, 'iac', 'terraform.tfstate'), 'utf8'), 'keep me');
   assert.equal(r.calls.length, 0);
+});
+
+test('migrate-state reads a relative state path from the working copy root', () => {
+  const { dir, run } = setup();
+  plainState(dir);
+  const r = run(['migrate-state', 'plain.tfstate'], {}, { cwd: dir });
+  assert.equal(r.status, 0, r.out);
+  assert.equal(called(r, 'init').length, 1);
+});
+
+test('output writes a relative path next to the caller, not into iac/', () => {
+  const { dir, run } = setup();
+  const r = run(['output', '--github-output', 'gh-out'], { GITHUB_ACTIONS: 'true' }, { cwd: dir });
+  assert.equal(r.status, 0, r.out);
+  assert.ok(existsSync(join(dir, 'gh-out')));
+  assert.ok(!existsSync(join(dir, 'iac', 'gh-out')));
+});
+
+test('migrate-state refuses while iac/terraform.tfstate.backup exists', () => {
+  const { dir, run } = setup();
+  writeFileSync(join(dir, 'iac', 'terraform.tfstate.backup'), 'keep me');
+  const r = run(['migrate-state', plainState(dir)]);
+  assert.equal(r.status, 2);
+  assert.match(r.stderr, /iac\/terraform\.tfstate\.backup/);
+  assert.equal(r.calls.length, 0);
+});
+
+test('migrate-state removes the copy and the backup tofu wrote', () => {
+  const { dir, run } = setup();
+  const r = run(['migrate-state', plainState(dir)]);
+  assert.equal(r.status, 0, r.out);
+  assert.ok(!existsSync(join(dir, 'iac', 'terraform.tfstate.backup')));
+  assert.match(called(r, 'init')[0], /-lock-timeout=10m/);
+});
+
+test('migrate-state removes the plain copy when init fails', () => {
+  const { dir, run } = setup();
+  const r = run(['migrate-state', plainState(dir)], { STUB_INIT_FAIL: '1' });
+  assert.equal(r.status, 1);
+  assert.ok(r.lines.some(([k, v]) => k === 'STATE' && v === 'mode=600'));
+  assert.ok(!existsSync(join(dir, 'iac', 'terraform.tfstate')));
+  assert.ok(!existsSync(join(dir, 'iac', 'terraform.tfstate.backup')));
+});
+
+test('the temporary directory is removed on exit', () => {
+  const { dir, run } = setup();
+  const tmp = join(dir, 'tmp');
+  mkdirSync(tmp);
+  for (const [args, env] of [
+    [['apply'], { STUB_PLAN_JSON: fixture('plan-create.json') }],
+    [['apply', '--confirmed'], { STUB_PLAN_JSON: fixture('plan-update.json') }],
+  ]) {
+    run(args, { TMPDIR: tmp, ...env });
+    assert.deepEqual(readdirSync(tmp), []);
+  }
+});
+
+test('the allowed e-mail addresses are masked under GitHub Actions', () => {
+  const { run } = setup();
+  const r = run(['plan'], { GITHUB_ACTIONS: 'true', ACCESS_ALLOWED_EMAILS: 'a@example.test, b@example.test' });
+  assert.equal(r.status, 0, r.out);
+  assert.match(r.stdout, /^::add-mask::a@example\.test$/m);
+  assert.match(r.stdout, /^::add-mask::b@example\.test$/m);
+});
+
+test('a mask command escapes %, CR and LF', () => {
+  const { dir, run } = setup();
+  const f = join(dir, 'pct.json');
+  writeFileSync(f, JSON.stringify({ csrf_key: { sensitive: true, type: 'string', value: '100%done' } }));
+  const r = run(['output', '--github-output', join(dir, 'o')], { GITHUB_ACTIONS: 'true', STUB_OUTPUT_JSON: f });
+  assert.equal(r.status, 0, r.out);
+  assert.match(r.stdout, /^::add-mask::100%25done$/m);
+});
+
+test('a network failure reaches stderr as curl\'s own error, not as a rejected token alone', () => {
+  const { dir, run } = setup();
+  writeFileSync(join(dir, 'bin', 'curl'), '#!/usr/bin/env bash\ncat >/dev/null\necho "curl: (6) Could not resolve host" >&2\nexit 6\n');
+  const r = run(['plan']);
+  assert.equal(r.status, 1);
+  assert.match(r.stderr, /curl: \(6\) Could not resolve host/);
+  assert.ok(!r.out.includes(TOKEN));
+});
+
+test('--help exits 0 when iac/ is missing', () => {
+  const { dir, run } = setup();
+  spawnSync('rm', ['-r', join(dir, 'iac')]);
+  assert.equal(run(['--help'], {}, { withInputs: false }).status, 0);
 });
