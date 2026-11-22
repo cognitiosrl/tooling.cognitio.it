@@ -339,18 +339,19 @@ fi
 
 # The plan JSON carries values (the sensitive ones too): it stays in $WORK and
 # only the resource addresses, the output names and their sensitivity are read
-# from it.
+# from it. A resource that only moves to a new address (a `moved` block) carries a
+# previous_address: it is a change, since applying it is what writes the new address to the state.
 tofu show -json "$plan" >"$WORK/plan.json"
 changes="$(jq -r '.resource_changes[]?
-  | select((.change.actions != ["no-op"] and .change.actions != ["read"]) or (.change.importing != null))
+  | select((.change.actions != ["no-op"] and .change.actions != ["read"]) or (.change.importing != null) or (.previous_address != null))
   | .address' "$WORK/plan.json")"
 # A forget drops a resource from the state and leaves it in the account; declaring it
 # again then creates a new one (new keys, for a random_bytes), so it is gated as a delete.
 deletes="$(jq -r '.resource_changes[]?
   | select(.change.actions | (index("delete") or index("forget")))
   | .address' "$WORK/plan.json")"
-# The deploy ships the outputs, the keys among them as the serving Worker's secrets. Adding
-# an output changes nothing deployed; changing or removing one is gated as a resource change,
+# The deploy ships the outputs, the keys among them as the Workers' secrets (the serve
+# deploy ships the verifier key, the admin deploy both keys). Adding an output changes nothing deployed; changing or removing one is gated as a resource change,
 # and for a sensitive output as a delete, since it replaces the keys every credential is
 # verified with.
 added_outputs="$(jq -r '[.output_changes // {} | to_entries[] | select(.value.actions == ["create"]) | .key]

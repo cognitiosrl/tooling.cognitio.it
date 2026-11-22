@@ -340,6 +340,19 @@ test('apply --confirmed applies an update', () => {
   assert.match(apply[0], /-lock-timeout=10m/);
 });
 
+test('apply refuses a plan whose only change is a moved address, and --confirmed applies it', () => {
+  const { run } = setup();
+  const r = run(['apply'], { STUB_PLAN_JSON: fixture('plan-moved.json') });
+  assert.equal(r.status, 1, r.out);
+  assert.match(r.stderr, /the plan changes:\n {2}cloudflare_workers_route\.any_publication\["tooling\.cognitio\.it"\]\n/);
+  assert.match(r.stderr, /apply refused; to allow it, pass --confirmed$/m);
+  assert.equal(called(r, 'apply').length, 0);
+  const { run: run2 } = setup();
+  const confirmed = run2(['apply', '--confirmed'], { STUB_PLAN_JSON: fixture('plan-moved.json') });
+  assert.equal(confirmed.status, 0, confirmed.out);
+  assert.equal(called(confirmed, 'apply').length, 1);
+});
+
 test('apply --confirmed refuses a delete', () => {
   const { run } = setup();
   const r = run(['apply', '--confirmed'], { STUB_PLAN_JSON: fixture('plan-delete.json') });
