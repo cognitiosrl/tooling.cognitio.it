@@ -31,8 +31,105 @@ commit for `serverless-registry`. Pushing that commit deploys it.
 
 ## Operator steps
 
-This section lists the steps the operator runs by hand: the first apply, the cutover of each host and the moments a
-person reads a plan before a gate changes.
+### Repository settings
+
+Repository variables:
+
+| Variable | Value |
+|---|---|
+| `CLOUDFLARE_ACCOUNT_ID` | the account that owns the Workers and the zones |
+| `CLOUDFLARE_ZONE_IDS` | JSON object, hostname to zone ID, one entry for each of the three hosts |
+| `TOFU_STATE_BUCKET` | the R2 bucket holding OpenTofu's encrypted state |
+| `ACCESS_IDP_ID` | the ID of the Access identity provider the admin host signs in with |
+| `ADMIN_SERVICE_TOKEN_ID` | the ID of the Access service token the command line presents (the ID, never the secret) |
+| `ACCESS_TEAM_DOMAIN` | the Access team domain, an `https` origin with no path |
+
+Repository secrets:
+
+| Secret | Value |
+|---|---|
+| `CLOUDFLARE_API_TOKEN` | account permissions Workers Scripts, Workers R2 Storage, D1 and Access Apps and Policies, all Edit; zone permissions Workers Routes and DNS, Edit |
+| `TOFU_STATE_PASSPHRASE` | the state's encryption passphrase; keep it in the password manager too, since without it the state cannot be read |
+| `ACCESS_ALLOWED_EMAILS` | the addresses allowed through the admin host's Access gate, comma-separated |
+| `COGNITIO_TOOLING_DEPLOY_KEY` | a read-only deploy key on `cognitiosrl/cognitio-tooling` |
+
+GitHub does not send secrets to workflows run for pull requests from forks (repository and organisation settings).
+`plan.yml` skips the checkout of `cognitio-tooling` and every step that needs it for such a pull request and for one by
+Dependabot; the tests that need no checkout still run.
+
+### Deploying code and infrastructure
+
+A push to `main` runs `deploy.yml`: the pin check (`scripts/check-pins.sh`), the tests, OpenTofu, the D1 migrations and
+the four Workers, then a check of each deployment and a smoke test of the public hosts. A push deploys code and applies
+an OpenTofu plan only when it changes nothing or only adds outputs: `scripts/tofu.sh apply` refuses any other resource
+change, and any change to or removal of an existing output, without `--confirmed`, and a delete, replace or forget of a
+resource, or a change to a sensitive output (a key the deploy ships), without `--delete-confirmed` as well. The refusal
+fails the run before any Worker deploys.
+
+To change infrastructure:
+
+1. Open a pull request: `plan.yml` shows OpenTofu's plan and applies nothing.
+2. Merge it; the push stops at OpenTofu if the plan changes infrastructure.
+3. Run the `deploy` workflow with `workflow_dispatch` and `plan_only` set: it runs `scripts/tofu.sh plan` and stops.
+   Read the plan.
+4. Run the workflow again with `infra_change_confirmed` set, and also `delete_confirmed` when the plan deletes,
+   replaces or forgets a resource or changes a sensitive output.
+
+One deploy runs at a time (`concurrency` group `deploy-<repository>`, no cancellation).
+
+Each deploy prints the D1 database's Time Travel bookmark in its job summary before it applies the migrations.
+
+### Deploy guard
+
+A Worker that holds secrets the workflow does not upload (the registry's pairs, the files Worker's `CONSUMERS`) keeps
+them from its previous version across a deploy. Before the registry and files deploys, the workflow reads the Worker's
+deployment and its versions and deploys only while its latest version serves at 100 %; otherwise the step fails and its
+message names the way out: put each kept secret on a new version with `wrangler versions secret put <NAME> --name
+<worker>` and deploy that version with `wrangler versions deploy <version>@100% --name <worker>`, or, if the latest
+version's secrets are right, `wrangler versions deploy <latest>@100% --name <worker>`. The guard needs an existing
+deployment, so a Worker's first deploy is made by hand.
+
+### Upgrading
+
+An upgrade is one commit that moves one gitlink (see Pins). `scripts/check-pins.sh` refuses a commit that moves
+`cognitio-tooling` to anything but a release tag `vX.Y.Z` on its `main`, or `serverless-registry` to a commit that is
+not on `aggrega`. A `cognitio-tooling` release's D1 migrations are applied by the deploy before the Workers.
+
+### Rolling back
+
+- A Worker: `wrangler rollback <version> --name <worker>`. The rolled-back version serves at 100 % while it is not the
+  latest, so the deploy guard refuses the next registry or files deploy until the latest version serves again (the
+  guard's message names the ways out).
+- Code: revert the commit and push.
+- Infrastructure: revert the commit, then run the confirmed dispatch as above.
+- D1: Time Travel to the bookmark the deploy printed in its job summary.
+
+### Running OpenTofu by hand
+
+`scripts/tofu.sh plan` and `scripts/tofu.sh apply` run from the same environment variables as the workflow
+(`CLOUDFLARE_API_TOKEN`, `CLOUDFLARE_ACCOUNT_ID`, `TOFU_STATE_BUCKET`, `TOFU_STATE_PASSPHRASE`,
+`CLOUDFLARE_ZONE_IDS`, `ACCESS_IDP_ID`, `ACCESS_ALLOWED_EMAILS`, `ADMIN_SERVICE_TOKEN_ID`) and take the same
+confirmation flags. The script drops `TF_DATA_DIR`, `TF_WORKSPACE`, `TF_ENCRYPTION`, `TF_CLI_ARGS*` and `TF_VAR_*` from
+the environment, so a run reads only those inputs. `apply` holds the state lock, which keeps a run by hand and a
+workflow run apart; `plan` takes none. `scripts/tofu.sh --help` states the exit statuses.
+
+`scripts/tofu.sh migrate-state <plain state file>` carries a plain state into the bucket, encrypted. It runs by hand
+only (it refuses under `GITHUB_ACTIONS`), needs only the first four variables, and refuses a bucket key that already
+holds a state with resources.
+
+### Rebuilding from nothing
+
+OpenTofu creates or imports the bucket and the D1 database. Nothing in CI puts a secret: the registry's two pairs go on
+with `wrangler secret put` and the files Worker's `CONSUMERS` with `node consumers.mjs push` (see the credentials
+below), and each Worker's first deploy is by hand, because the deploy guard needs an existing deployment.
+
+Credentials that `cognitio-tooling import-consumers` creates expire 48 hours after the import unless `--expires <date>`
+says otherwise. In the import's session, give each imported consumer a credential (`cognitio-tooling credential add`)
+or a later expiry (`cognitio-tooling credential expires <login> <label> <date|never>`), or every consumer answers 401
+on the serving Worker's host once the 48 hours pass. Cut `tooling.cognitio.it` over to the serving Worker within those
+48 hours or after that step.
+
+The read-only pair is an ordinary consumer of the files Worker, allowed `tandemsdd`; see below.
 
 ## TANDEM credentials and machine log-in
 
