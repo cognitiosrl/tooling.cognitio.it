@@ -91,9 +91,27 @@ deployment, so a Worker's first deploy is made by hand.
 
 ### Upgrading
 
-An upgrade is one commit that moves one gitlink (see Pins). `scripts/check-pins.sh` refuses a commit that moves
-`cognitio-tooling` to anything but a release tag `vX.Y.Z` on its `main`, or `serverless-registry` to a commit that is
-not on `aggrega`. A `cognitio-tooling` release's D1 migrations are applied by the deploy before the Workers.
+An upgrade is one commit that moves one gitlink (see Pins):
+
+```bash
+git -C cognitio-tooling fetch --tags origin && git -C cognitio-tooling checkout vX.Y.Z
+git add cognitio-tooling && git commit -m "chore: move cognitio-tooling to X.Y.Z"
+
+git -C serverless-registry fetch origin aggrega && git -C serverless-registry checkout <commit on aggrega>
+git add serverless-registry && git commit -m "chore: move serverless-registry"
+```
+
+`scripts/check-pins.sh` refuses a commit that moves `cognitio-tooling` to anything but a release tag `vX.Y.Z` on its
+`main`, or `serverless-registry` to a commit that is not on `aggrega`. A `cognitio-tooling` release's D1 migrations are
+applied by the deploy before the Workers.
+
+### Moving a host's reads to another Worker
+
+The Worker that serves a host's reads is set by `any_publication_worker_name` in `iac/variables.tf`. Change it in one
+commit; the push stops at OpenTofu, because the route changes. Run `plan_only` and check that the plan updates the
+route in place; a plan that replaces it is refused by `scripts/tofu.sh apply` unless `delete_confirmed` is also set, so
+do not set it. Then run the confirmed dispatch. To move the reads back, revert the commit and run the confirmed dispatch
+again.
 
 ### Rolling back
 
@@ -102,16 +120,17 @@ not on `aggrega`. A `cognitio-tooling` release's D1 migrations are applied by th
   guard's message names the ways out).
 - Code: revert the commit and push.
 - Infrastructure: revert the commit, then run the confirmed dispatch as above.
-- D1: Time Travel to the bookmark the deploy printed in its job summary.
+- D1: `wrangler d1 time-travel restore cognitio-tooling --bookmark=<bookmark from the run's job summary>`.
 
 ### Running OpenTofu by hand
 
 `scripts/tofu.sh plan` and `scripts/tofu.sh apply` run from the same environment variables as the workflow
 (`CLOUDFLARE_API_TOKEN`, `CLOUDFLARE_ACCOUNT_ID`, `TOFU_STATE_BUCKET`, `TOFU_STATE_PASSPHRASE`,
-`CLOUDFLARE_ZONE_IDS`, `ACCESS_IDP_ID`, `ACCESS_ALLOWED_EMAILS`, `ADMIN_SERVICE_TOKEN_ID`) and take the same
-confirmation flags. The script drops `TF_DATA_DIR`, `TF_WORKSPACE`, `TF_ENCRYPTION`, `TF_CLI_ARGS*` and `TF_VAR_*` from
-the environment, so a run reads only those inputs. `apply` holds the state lock, which keeps a run by hand and a
-workflow run apart; `plan` takes none. `scripts/tofu.sh --help` states the exit statuses.
+`CLOUDFLARE_ZONE_IDS`, `ACCESS_IDP_ID`, `ACCESS_ALLOWED_EMAILS`, `ADMIN_SERVICE_TOKEN_ID`) and
+`apply` takes the same confirmation flags (`plan` takes none). The script drops `TF_DATA_DIR`, `TF_WORKSPACE`, `TF_ENCRYPTION`, `TF_CLI_ARGS*` and `TF_VAR_*` from
+the environment, so none of them changes a run; `TF_CLI_CONFIG_FILE` and the operator's own OpenTofu CLI
+configuration stay. The state lock keeps a run by hand and a workflow run apart; `plan` takes none. The exit statuses
+are in the script's header comment.
 
 `scripts/tofu.sh migrate-state <plain state file>` carries a plain state into the bucket, encrypted. It runs by hand
 only (it refuses under `GITHUB_ACTIONS`), needs only the first four variables, and refuses a bucket key that already
@@ -119,15 +138,14 @@ holds a state with resources.
 
 ### Rebuilding from nothing
 
-OpenTofu creates or imports the bucket and the D1 database. Nothing in CI puts a secret: the registry's two pairs go on
-with `wrangler secret put` and the files Worker's `CONSUMERS` with `node consumers.mjs push` (see the credentials
-below), and each Worker's first deploy is by hand, because the deploy guard needs an existing deployment.
+OpenTofu creates or imports the bucket and the D1 database. CI never puts the registry's two pairs or the files Worker's
+`CONSUMERS`: the pairs go on with `wrangler secret put` and the files Worker's `CONSUMERS` with `node consumers.mjs push` (see the credentials
+below). Each deploy uploads only the two cognitio-tooling keys, which OpenTofu generates. Each Worker's first deploy is by hand, because the deploy guard needs an existing deployment.
 
-Credentials that `cognitio-tooling import-consumers` creates expire 48 hours after the import unless `--expires <date>`
-says otherwise. In the import's session, give each imported consumer a credential (`cognitio-tooling credential add`)
-or a later expiry (`cognitio-tooling credential expires <login> <label> <date|never>`), or every consumer answers 401
-on the serving Worker's host once the 48 hours pass. Cut `tooling.cognitio.it` over to the serving Worker within those
-48 hours or after that step.
+Credentials that `cognitio-tooling import-consumers` creates stop serving 48 hours after the import unless `--expires
+<date>` says otherwise. In the import's session, give each imported consumer a later expiry
+(`cognitio-tooling credential expires <login> imported <date|never>`) or a new credential (`cognitio-tooling credential
+add`); otherwise every consumer answers 401 on the serving Worker's host once the 48 hours pass.
 
 The read-only pair is an ordinary consumer of the files Worker, allowed `tandemsdd`; see below.
 
