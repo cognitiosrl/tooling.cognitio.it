@@ -31,11 +31,7 @@ locals {
 
   # The hosts with no custom domain. A route needs a proxied DNS record for its host,
   # and the custom domain provisions the registry host's; these need one of their own.
-  route_only_hosts = setsubtract(setunion(keys(var.publications), var.any_publication_hosts), [var.registry_hostname])
-
-  # The Worker the any-publication routes name: var.any_publication_worker_name, the
-  # instance's serving Worker by default, or the files Worker when it is null.
-  any_publication_worker_name = coalesce(var.any_publication_worker_name, var.files_worker_name)
+  route_only_hosts = setsubtract(setunion(keys(var.publications), var.serving_hosts), [var.registry_hostname])
 }
 
 # Binds the registry Worker to its host. Cloudflare provisions the proxied DNS
@@ -100,19 +96,18 @@ resource "cloudflare_workers_route" "files" {
   depends_on = [cloudflare_workers_custom_domain.registry, cloudflare_dns_record.files]
 }
 
-# Sends every path of each host that serves any publication to the Worker
-# local.any_publication_worker_name names: the cognitio-tooling serving Worker, which
-# resolves each path to a namespace and a module, unless the variable is null or names
-# the files Worker, which serves every publication name there. The files Worker keeps
-# tooling.aggrega.ai/tandemsdd/* through the routes above either way. Such a host is
-# never the registry's, whose other paths must still reach the registry, and never one
-# that also lists its publications, whose routes this one would make redundant.
-resource "cloudflare_workers_route" "any_publication" {
-  for_each = toset(var.any_publication_hosts)
+# Sends every path of each serving host to the cognitio-tooling serving Worker, which
+# resolves each path to a namespace and a module from its own D1 customers and grants.
+# The files Worker keeps tooling.aggrega.ai/tandemsdd/* through the routes above. A
+# serving host is never the registry's, whose other paths must still reach the
+# registry, and never one that also lists its publications, whose routes this one would
+# make redundant.
+resource "cloudflare_workers_route" "serving" {
+  for_each = toset(var.serving_hosts)
 
   zone_id = var.zone_ids[each.value]
   pattern = "${each.value}/*"
-  script  = local.any_publication_worker_name
+  script  = var.instance_worker_names.serve
 
   lifecycle {
     precondition {
@@ -121,15 +116,19 @@ resource "cloudflare_workers_route" "any_publication" {
     }
     precondition {
       condition     = each.value != var.registry_hostname && !contains(keys(var.publications), each.value)
-      error_message = "\"${each.value}\" serves any publication, so it is neither the registry's host nor a host in publications."
-    }
-    precondition {
-      condition     = contains([var.files_worker_name, var.instance_worker_names.serve], local.any_publication_worker_name)
-      error_message = "any_publication_worker_name is the files Worker or the instance's serving Worker, never the admin Worker or another."
+      error_message = "\"${each.value}\" is a serving host, so it is neither the registry's host nor a host in publications."
     }
   }
 
   depends_on = [cloudflare_dns_record.files]
+}
+
+# A state that holds the serving route at cloudflare_workers_route.any_publication is
+# carried to cloudflare_workers_route.serving, so the route is neither destroyed nor
+# created again.
+moved {
+  from = cloudflare_workers_route.any_publication
+  to   = cloudflare_workers_route.serving
 }
 
 # A state that holds the tandemsdd route at cloudflare_workers_route.plugins is carried

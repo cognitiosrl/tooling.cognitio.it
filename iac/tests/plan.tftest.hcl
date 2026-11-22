@@ -17,7 +17,7 @@ variables {
 run "admin_record_and_route_absent_while_admin_route_enabled_is_false" {
   command = plan
   plan_options {
-    target = [cloudflare_workers_route.admin, cloudflare_dns_record.admin, cloudflare_workers_route.any_publication]
+    target = [cloudflare_workers_route.admin, cloudflare_dns_record.admin, cloudflare_workers_route.serving]
   }
 
   variables {
@@ -33,7 +33,7 @@ run "admin_record_and_route_absent_while_admin_route_enabled_is_false" {
 run "the_admin_record_and_route_exist_with_the_admin_worker_and_host_when_enabled" {
   command = plan
   plan_options {
-    target = [cloudflare_workers_route.admin, cloudflare_dns_record.admin, cloudflare_workers_route.any_publication]
+    target = [cloudflare_workers_route.admin, cloudflare_dns_record.admin, cloudflare_workers_route.serving]
   }
 
   assert {
@@ -46,67 +46,68 @@ run "the_admin_record_and_route_exist_with_the_admin_worker_and_host_when_enable
   }
 }
 
-run "the_any_publication_route_names_the_serving_worker_by_default" {
+run "the_serving_route_exists_for_each_serving_host_and_names_the_serve_worker" {
   command = plan
   plan_options {
-    target = [cloudflare_workers_route.admin, cloudflare_dns_record.admin, cloudflare_workers_route.any_publication]
+    target = [cloudflare_workers_route.admin, cloudflare_dns_record.admin, cloudflare_workers_route.serving]
   }
 
   assert {
-    condition     = cloudflare_workers_route.any_publication["tooling.cognitio.it"].script == "cognitio-tooling"
-    error_message = "the any-publication route does not name the serving Worker"
+    condition     = length(cloudflare_workers_route.serving) == 1 && cloudflare_workers_route.serving["tooling.cognitio.it"].script == "cognitio-tooling"
+    error_message = "the serving route is absent for tooling.cognitio.it or does not name the serving Worker"
+  }
+  assert {
+    condition     = cloudflare_workers_route.serving["tooling.cognitio.it"].pattern == "tooling.cognitio.it/*"
+    error_message = "the serving route does not cover every path of the host"
   }
 }
 
-run "the_any_publication_route_names_the_files_worker_when_the_variable_says_so" {
+run "a_serving_route_names_no_other_worker" {
   command = plan
   plan_options {
-    target = [cloudflare_workers_route.admin, cloudflare_dns_record.admin, cloudflare_workers_route.any_publication]
+    target = [cloudflare_workers_route.admin, cloudflare_dns_record.admin, cloudflare_workers_route.serving]
   }
 
   variables {
-    any_publication_worker_name = "tandem-tooling-files"
+    serving_hosts = ["tooling.cognitio.it", "tooling-admin.cognitio.it"]
   }
 
   assert {
-    condition     = cloudflare_workers_route.any_publication["tooling.cognitio.it"].script == "tandem-tooling-files"
-    error_message = "the any-publication route does not name the files Worker"
+    condition     = alltrue([for route in cloudflare_workers_route.serving : route.script == "cognitio-tooling"])
+    error_message = "a serving route names a Worker other than the serving Worker"
   }
 }
 
-run "a_null_variable_routes_the_any_publication_host_to_the_files_worker" {
+run "a_serving_host_that_is_the_registry_host_fails_the_routes_precondition" {
   command = plan
   plan_options {
-    target = [cloudflare_workers_route.admin, cloudflare_dns_record.admin, cloudflare_workers_route.any_publication]
+    target = [cloudflare_workers_route.admin, cloudflare_dns_record.admin, cloudflare_workers_route.serving]
   }
 
   variables {
-    any_publication_worker_name = null
+    serving_hosts = ["tooling.aggrega.ai"]
   }
 
-  assert {
-    condition     = cloudflare_workers_route.any_publication["tooling.cognitio.it"].script == "tandem-tooling-files"
-    error_message = "a null any_publication_worker_name does not send the host to the files Worker"
-  }
+  expect_failures = [cloudflare_workers_route.serving]
 }
 
-run "a_variable_naming_the_admin_worker_fails_the_routes_precondition" {
+run "a_serving_host_listed_twice_fails_validation" {
   command = plan
   plan_options {
-    target = [cloudflare_workers_route.admin, cloudflare_dns_record.admin, cloudflare_workers_route.any_publication]
+    target = [cloudflare_workers_route.admin, cloudflare_dns_record.admin, cloudflare_workers_route.serving]
   }
 
   variables {
-    any_publication_worker_name = "cognitio-tooling-admin"
+    serving_hosts = ["tooling.cognitio.it", "tooling.cognitio.it"]
   }
 
-  expect_failures = [cloudflare_workers_route.any_publication]
+  expect_failures = [var.serving_hosts]
 }
 
 run "an_empty_email_list_fails_validation" {
   command = plan
   plan_options {
-    target = [cloudflare_workers_route.admin, cloudflare_dns_record.admin, cloudflare_workers_route.any_publication]
+    target = [cloudflare_workers_route.admin, cloudflare_dns_record.admin, cloudflare_workers_route.serving]
   }
 
   variables {

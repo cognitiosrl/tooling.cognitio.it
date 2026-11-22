@@ -9,7 +9,7 @@ variable "account_id" {
 }
 
 variable "zone_ids" {
-  description = "Cloudflare zone ID of the zone holding each host, keyed by hostname: one entry for var.registry_hostname and for every host in var.publications, var.any_publication_hosts and var.admin_hostname."
+  description = "Cloudflare zone ID of the zone holding each host, keyed by hostname: one entry for var.registry_hostname and for every host in var.publications, var.serving_hosts and var.admin_hostname."
   type        = map(string)
 }
 
@@ -44,21 +44,15 @@ variable "publications" {
   }
 }
 
-variable "any_publication_hosts" {
-  description = "The hosts routed whole, one route each at https://<host>/*, to the Worker var.any_publication_worker_name names. Must name the same hosts as ANY_PUBLICATION_HOSTS in ../files/wrangler.jsonc, so the files Worker serves every publication name there whenever the routes name it, and none that var.publications lists or the registry's host."
+variable "serving_hosts" {
+  description = "The hosts the cognitio-tooling serving Worker (var.instance_worker_names.serve) answers whole, one route each at https://<host>/*. None is the registry's host or a host in var.publications; the files Worker serves none of them."
   type        = list(string)
   default     = ["tooling.cognitio.it"]
 
   validation {
-    condition     = length(distinct(var.any_publication_hosts)) == length(var.any_publication_hosts)
-    error_message = "any_publication_hosts lists a host twice."
+    condition     = length(distinct(var.serving_hosts)) == length(var.serving_hosts)
+    error_message = "serving_hosts lists a host twice."
   }
-}
-
-variable "any_publication_worker_name" {
-  description = "Name of the Worker the any_publication_hosts routes send their host to: the cognitio-tooling instance's serving Worker, the name in var.instance_worker_names.serve. Null, or var.files_worker_name, sends the hosts to the files Worker instead."
-  type        = string
-  default     = "cognitio-tooling"
 }
 
 variable "instance_worker_names" {
