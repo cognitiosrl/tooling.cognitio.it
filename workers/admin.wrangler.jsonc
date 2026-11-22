@@ -19,7 +19,7 @@
     "PUBLIC_URL": "https://tooling.cognitio.it",
     "DEFAULT_NAMESPACE": "cognitio",
     "IMMUTABLE_PREFIXES": ["archives/"],
-    "LEGACY_LAYOUT": "read",
+    "LEGACY_LAYOUT": "off",
     "CACHE_TTL_SECONDS": "60",
     "ADMIN_HOST": "tooling-admin.cognitio.it",
     // The Access application's team domain, and its audience (the `admin_access_aud` output

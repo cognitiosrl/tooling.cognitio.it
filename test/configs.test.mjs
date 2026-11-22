@@ -77,7 +77,7 @@ test("the serving vars are the same in both Workers", () => {
   for (const key of ["PUBLIC_URL", "DEFAULT_NAMESPACE", "IMMUTABLE_PREFIXES", "LEGACY_LAYOUT", "CACHE_TTL_SECONDS"]) {
     assert.deepEqual(admin.vars[key], serve.vars[key], key);
   }
-  assert.equal(serve.vars.LEGACY_LAYOUT, "read");
+  assert.equal(serve.vars.LEGACY_LAYOUT, "off");
   assert.equal(admin.vars.PUBLIC_URL, serve.vars.PUBLIC_URL);
 });
 
@@ -116,7 +116,7 @@ test("the vars pass the code base's own configuration checks once the placeholde
   assert.equal(administered.faults, undefined, String(administered.faults));
 });
 
-test("the served host is one of any_publication_hosts", () => {
-  const hosts = [...(variableBlock("any_publication_hosts").match(/^\s*default\s*=\s*\[([^\]]*)\]/m)?.[1] ?? "").matchAll(/"([^"]*)"/g)].map((m) => m[1]);
+test("the served host is one of serving_hosts", () => {
+  const hosts = [...(variableBlock("serving_hosts").match(/^\s*default\s*=\s*\[([^\]]*)\]/m)?.[1] ?? "").matchAll(/"([^"]*)"/g)].map((m) => m[1]);
   assert.ok(hosts.includes(new URL(serve.vars.PUBLIC_URL).host));
 });

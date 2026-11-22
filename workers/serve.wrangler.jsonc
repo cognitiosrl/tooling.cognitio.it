@@ -16,7 +16,7 @@
     "PUBLIC_URL": "https://tooling.cognitio.it",
     "DEFAULT_NAMESPACE": "cognitio",
     "IMMUTABLE_PREFIXES": ["archives/"],
-    "LEGACY_LAYOUT": "read",
+    "LEGACY_LAYOUT": "off",
     "CACHE_TTL_SECONDS": "60"
   },
   // The bucket the TANDEM files Worker binds (../files/wrangler.jsonc).
