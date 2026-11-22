@@ -7,10 +7,10 @@ and the TANDEM marketplace.
 
 | Host | Worker | Serves |
 |---|---|---|
-| `tooling.cognitio.it` | `cognitio-tooling` | the tooling's public surface |
+| `tooling.cognitio.it` | `cognitio-tooling` | the tooling's public surface, from its D1 customers and grants |
 | `tooling-admin.cognitio.it` | `cognitio-tooling-admin` | the administration surface, behind Cloudflare Access |
 | `tooling.aggrega.ai` | `tandem-tooling-registry` | the TANDEM registry |
-| `tooling.aggrega.ai` | `tandem-tooling-files` | the TANDEM marketplace files |
+| `tooling.aggrega.ai` | `tandem-tooling-files` | the TANDEM marketplace alone, at `tooling.aggrega.ai/tandemsdd/*` |
 
 The Workers share one R2 bucket, `tandem-tooling`. OpenTofu (`iac/`) owns the bucket, the D1 database, the
 generated keys, the DNS records, the routes, the custom domain and the Access application; `wrangler deploy` owns
@@ -112,13 +112,12 @@ git add serverless-registry && git commit -m "chore: move serverless-registry"
 `main`, or `serverless-registry` to a commit that is not on `aggrega`. A `cognitio-tooling` release's D1 migrations are
 applied by the deploy before the Workers.
 
-### Moving a host's reads to another Worker
+### Serving hosts
 
-The Worker that serves a host's reads is set by `any_publication_worker_name` in `iac/variables.tf`. Change it in one
-commit; the push stops at OpenTofu, because the route changes. Run `plan_only` and check that the plan updates the
-route in place; a plan that replaces it is refused by `scripts/tofu.sh apply` unless `delete_confirmed` is also set, so
-do not set it. Then run the confirmed dispatch. To move the reads back, revert the commit and run the confirmed dispatch
-again.
+A host in `serving_hosts` (`iac/variables.tf`) is answered whole by the `cognitio-tooling` serving Worker, from its D1
+customers and grants; the files Worker serves none of them. Adding one is a commit that adds the host to the list (and
+its zone to `zone_ids`), a `plan_only` read of the plan, and a confirmed dispatch. A serving host is neither the
+registry's host nor a host in `publications`.
 
 ### Rolling back
 
@@ -178,13 +177,11 @@ This section covers the credentials TANDEM consumers use against the registry an
 No credential is in the repository or in OpenTofu state. The registry's pairs and the files Worker's `CONSUMERS` are
 Worker secrets; the serving Worker's credentials are verifiers in its D1 database.
 
-Which list governs which host: at the default route (`any_publication_worker_name` is `cognitio-tooling`),
-`tooling.cognitio.it` is answered by the serving Worker, from its D1 customers and grants, and the files Worker answers
-only `tooling.aggrega.ai/tandemsdd/*`. `node consumers.mjs … push` therefore changes only the files Worker. On
-`tooling.cognitio.it`, a consumer is added, revoked or granted with the `cognitio-tooling` command line: `customer
-add`, `customer disable` or `customer remove`, `credential add` or `credential revoke`, `grant add` or `grant remove`
-(`import-consumers` creates only the logins that are missing). When `any_publication_worker_name` is null, the files
-Worker answers `tooling.cognitio.it` and its list governs it (see "Moving a host's reads to another Worker").
+Which list governs which host: `tooling.cognitio.it` is answered by the serving Worker, from its D1 customers and
+grants, and the files Worker answers only `tooling.aggrega.ai/tandemsdd/*`. `node consumers.mjs … push` therefore
+changes only the files Worker. On `tooling.cognitio.it`, a consumer is added, revoked or granted with the
+`cognitio-tooling` command line: `customer add`, `customer disable` or `customer remove`, `credential add` or
+`credential revoke`, `grant add` or `grant remove` (`import-consumers` creates only the logins that are missing).
 
 - **The push pair**, used only by the release workflow: `USERNAME` and `PASSWORD` on the registry Worker,
   `tandem-tooling-registry`.
@@ -193,23 +190,20 @@ Worker answers `tooling.cognitio.it` and its list governs it (see "Moving a host
 - **The files Worker's consumers**: the secret `CONSUMERS` on the files Worker, `tandem-tooling-files`, a JSON list
   with one entry per consumer and the Worker's one secret. A request is served only when its Basic credential is a
   consumer's and that consumer lists the publication; a publication the consumer is not allowed answers 404, as a
-  file that does not exist does, and nothing is read. The list governs `tooling.aggrega.ai/tandemsdd/*` and, whenever
-  the files Worker answers `tooling.cognitio.it`, that host. It is kept in step with the serving Worker's customers,
-  so that moving the reads back to the files Worker serves the same consumers: `cognitio-tooling import-consumers
-  consumers.htpasswd --check` prints the logins whose hash differs and exits 1 when any does.
+  file that does not exist does, and nothing is read. The list governs `tooling.aggrega.ai/tandemsdd/*` alone; only a
+  consumer allowed `tandemsdd` (or `*`) is served there.
 
   ```json
   [
-    {"name": "cognitio", "username": "cognitio", "passwordSha256": "<hex>", "publications": ["tandemsdd", "l10n"]},
-    {"name": "aggrega",  "username": "aggrega",  "passwordSha256": "<hex>", "publications": ["tandemsdd", "l10n"]},
-    {"name": "acme",     "username": "acme",     "passwordSha256": "<hex>", "publications": ["l10n"]},
+    {"name": "cognitio", "username": "cognitio", "passwordSha256": "<hex>", "publications": ["tandemsdd"]},
+    {"name": "aggrega",  "username": "aggrega",  "passwordSha256": "<hex>", "publications": ["tandemsdd"]},
     {"name": "<read-only user>", "username": "<read-only user>", "passwordSha256": "<hex>", "publications": ["tandemsdd"]}
   ]
   ```
 
   `passwordSha256` is the SHA-256 of the password, in hex, so the secret holds no password. Usernames are unique and
-  carry no `:`. A consumer whose `publications` is `["*"]` is allowed every publication on any host the files Worker answers, including one
-  added later, so adding a publication changes nothing for it.
+  carry no `:`. A consumer whose `publications` is `["*"]` is allowed every publication the files Worker serves, including one added
+  later, so adding a publication changes nothing for it.
 
   `files/consumers.mjs` keeps the list in `consumers.htpasswd`, beside this README, one consumer per line
   (`<username>:<sha256>:<publications or *>`), and puts it as the secret. The file is git-ignored and kept with the
@@ -218,15 +212,16 @@ Worker answers `tooling.cognitio.it` and its list governs it (see "Moving a host
   ```bash
   cd files
   node consumers.mjs add aggrega '*' --generate     # prints a random password once
-  node consumers.mjs add acme l10n                  # prompts for the password
-  node consumers.mjs allow acme l10n,modules,modules-admin
+  node consumers.mjs add acme tandemsdd             # prompts for the password
+  node consumers.mjs allow acme tandemsdd
   node consumers.mjs remove acme
   node consumers.mjs push                           # wrangler secret put CONSUMERS
   ```
 
-  Every change is checked by the Worker's own parser, and against the publications `files/wrangler.jsonc`
-  configures, whichever host serves them, before the file is written; `--help` states the rest. A change here does not
-  reach `tooling.cognitio.it` at the default route: make it with the `cognitio-tooling` commands above as well.
+  Every change is checked by the Worker's own parser, and each publication must be a well-formed name, before the
+  file is written. The files Worker ignores a name in an entry that its `files/wrangler.jsonc` does not configure;
+  `--help` states the rest. A change here does not reach `tooling.cognitio.it`: make it with the `cognitio-tooling`
+  commands above.
 - **The read-only pair among the files Worker's consumers**: the registry's read-only pair is an ordinary consumer in
   `consumers.htpasswd`, allowed `tandemsdd` and nothing else, added with `node consumers.mjs add <read-only user>
   tandemsdd` and the registry's read-only password typed at the prompt. The files Worker holds no `READONLY_*`
