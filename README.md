@@ -12,13 +12,13 @@ and the TANDEM marketplace.
 | `tooling.aggrega.ai` | `tandem-tooling-registry` | the TANDEM registry |
 | `tooling.aggrega.ai` | `tandem-tooling-files` | the TANDEM marketplace files |
 
-The four Workers share one R2 bucket, `tandem-tooling`. OpenTofu (`iac/`) owns the bucket, the D1 database, the
+The Workers share one R2 bucket, `tandem-tooling`. OpenTofu (`iac/`) owns the bucket, the D1 database, the
 generated keys, the DNS records, the routes, the custom domain and the Access application; `wrangler deploy` owns
 each Worker's code, variables and bindings.
 
 ## Pins
 
-Two submodules carry the code that is deployed:
+The submodules carry the code that is deployed:
 
 - `cognitio-tooling` is pinned at a release tag `vX.Y.Z` on its `main` branch.
 - `serverless-registry` is pinned at a commit of its `aggrega` branch.
@@ -38,7 +38,7 @@ Repository variables:
 | Variable | Value |
 |---|---|
 | `CLOUDFLARE_ACCOUNT_ID` | the account that owns the Workers and the zones |
-| `CLOUDFLARE_ZONE_IDS` | JSON object, hostname to zone ID, one entry for each of the three hosts |
+| `CLOUDFLARE_ZONE_IDS` | JSON object, hostname to zone ID, one entry for each host in the table above |
 | `TOFU_STATE_BUCKET` | the R2 bucket holding OpenTofu's encrypted state |
 | `ACCESS_IDP_ID` | the ID of the Access identity provider the admin host signs in with |
 | `ADMIN_SERVICE_TOKEN_ID` | the ID of the Access service token the command line presents (the ID, never the secret) |
@@ -60,7 +60,7 @@ Dependabot; the tests that need no checkout still run.
 ### Deploying code and infrastructure
 
 A push to `main` runs `deploy.yml`: the pin check (`scripts/check-pins.sh`), the tests, OpenTofu, the D1 migrations and
-the four Workers, then a check of each deployment and a smoke test of the public hosts. A push deploys code and applies
+the Workers, then a check of each deployment and a smoke test of the public hosts. A push deploys code and applies
 an OpenTofu plan only when it changes nothing or only adds outputs: `scripts/tofu.sh apply` refuses any other resource
 change, and any change to or removal of an existing output, without `--confirmed`, and a delete, replace or forget of a
 resource, or a change to a sensitive output (a key the deploy ships), without `--delete-confirmed` as well. The refusal
@@ -75,7 +75,9 @@ To change infrastructure:
 4. Run the workflow again with `infra_change_confirmed` set, and also `delete_confirmed` when the plan deletes,
    replaces or forgets a resource or changes a sensitive output.
 
-One deploy runs at a time (`concurrency` group `deploy-<repository>`, no cancellation).
+One deploy runs at a time (`concurrency` group `deploy-<repository>`, `cancel-in-progress` false). A run that is still waiting in the group is
+cancelled when a newer one queues (GitHub's rule), so a confirmed dispatch can be superseded by a push that arrives
+meanwhile; the run that was running is never cancelled, and a superseded dispatch does nothing: dispatch it again.
 
 Each deploy prints the D1 database's Time Travel bookmark in its job summary before it applies the migrations.
 
@@ -87,7 +89,12 @@ deployment and its versions and deploys only while its latest version serves at 
 message names the way out: put each kept secret on a new version with `wrangler versions secret put <NAME> --name
 <worker>` and deploy that version with `wrangler versions deploy <version>@100% --name <worker>`, or, if the latest
 version's secrets are right, `wrangler versions deploy <latest>@100% --name <worker>`. The guard needs an existing
-deployment, so a Worker's first deploy is made by hand.
+deployment, so the registry's and the files Worker's first deploy is made by hand.
+
+Both ways out serve the latest version's code: `wrangler versions secret put` patches the latest version, and
+`wrangler versions deploy <latest>` serves it. After rolling back a faulty registry or files version, resuming the
+guard's way out therefore serves the faulty code again until the next deploy. Deploy the fixed code, or upload a new
+version from the good one (`wrangler versions upload` from its source) and put the kept secrets on that.
 
 ### Upgrading
 
@@ -133,16 +140,29 @@ stay. The state lock keeps a run by hand and a workflow run apart; `plan` takes 
 script's header comment.
 
 `scripts/tofu.sh migrate-state <plain state file>` carries a plain state into the bucket, encrypted. It runs by hand
-only (it refuses under `GITHUB_ACTIONS`), needs only the first four variables, and refuses a bucket key that already
+only (it refuses under `GITHUB_ACTIONS`), needs only `CLOUDFLARE_API_TOKEN`, `CLOUDFLARE_ACCOUNT_ID`, `TOFU_STATE_BUCKET` and `TOFU_STATE_PASSPHRASE`, and refuses a bucket key that already
 holds a state with resources.
 
 ### Rebuilding from nothing
 
-OpenTofu creates or imports the bucket and the D1 database. CI never puts the registry's two pairs or the files Worker's
-`CONSUMERS`: the pairs go on with `wrangler secret put` and the files Worker's `CONSUMERS` with `node consumers.mjs
-push` (see the credentials below). The admin deploy uploads `VERIFIER_KEY` and `CSRF_KEY` and the serve deploy uploads
-`VERIFIER_KEY` (keys OpenTofu generates); the registry and files deploys upload no secret. Each Worker's first deploy is
-by hand, because the deploy guard needs an existing deployment.
+In an account that holds none of the resources, in this order:
+
+1. Create the R2 bucket `tandem-tooling` by hand. The `import` block in `iac/instance.tf` adopts an existing bucket and
+   never creates one, so a plan fails while the bucket is absent.
+2. Deploy the registry Worker and the files Worker by hand with `wrangler deploy` from their configurations in
+   `workers/` and `files/`, and put their secrets: the registry's two pairs with `wrangler secret put`, the files
+   Worker's `CONSUMERS` with `node consumers.mjs push` (see the credentials below). CI never puts these secrets, the
+   deploy guard needs an existing deployment, and OpenTofu attaches the registry host's custom domain only to a Worker
+   that is already deployed.
+3. Run the `deploy` workflow with `infra_change_confirmed` set. OpenTofu creates the D1 database, the generated keys,
+   the Access application, the DNS records, the routes and the custom domain and imports the bucket; the same run then
+   applies the D1 migrations and deploys the admin and serve Workers, uploading `VERIFIER_KEY` and `CSRF_KEY` (admin)
+   and `VERIFIER_KEY` (serve). Neither of those two Workers needs a first deploy by hand, and the generated keys and
+   the D1 database's ID reach them only through the workflow, since `scripts/tofu.sh output` refuses to run outside
+   GitHub Actions.
+
+🔴 **UNVERIFIED:** this order has not been run from an empty account; in particular, that the files Worker's routes
+attach before the Worker exists is not checked, so deploy it before the first run, as above.
 
 Credentials that `cognitio-tooling import-consumers` creates stop serving 48 hours after the import unless `--expires
 <date>` says otherwise. In the import's session, give each imported consumer a later expiry
@@ -155,7 +175,16 @@ The read-only pair is an ordinary consumer of the files Worker, allowed `tandems
 
 This section covers the credentials TANDEM consumers use against the registry and how a machine logs in with them.
 
-Every credential is a Worker secret, never in the repository or in OpenTofu state.
+No credential is in the repository or in OpenTofu state. The registry's pairs and the files Worker's `CONSUMERS` are
+Worker secrets; the serving Worker's credentials are verifiers in its D1 database.
+
+Which list governs which host: at the default route (`any_publication_worker_name` is `cognitio-tooling`),
+`tooling.cognitio.it` is answered by the serving Worker, from its D1 customers and grants, and the files Worker answers
+only `tooling.aggrega.ai/tandemsdd/*`. `node consumers.mjs … push` therefore changes only the files Worker. On
+`tooling.cognitio.it`, a consumer is added, revoked or granted with the `cognitio-tooling` command line: `customer
+add`, `customer disable` or `customer remove`, `credential add` or `credential revoke`, `grant add` or `grant remove`
+(`import-consumers` creates only the logins that are missing). When `any_publication_worker_name` is null, the files
+Worker answers `tooling.cognitio.it` and its list governs it (see "Moving a host's reads to another Worker").
 
 - **The push pair**, used only by the release workflow: `USERNAME` and `PASSWORD` on the registry Worker,
   `tandem-tooling-registry`.
@@ -164,7 +193,10 @@ Every credential is a Worker secret, never in the repository or in OpenTofu stat
 - **The files Worker's consumers**: the secret `CONSUMERS` on the files Worker, `tandem-tooling-files`, a JSON list
   with one entry per consumer and the Worker's one secret. A request is served only when its Basic credential is a
   consumer's and that consumer lists the publication; a publication the consumer is not allowed answers 404, as a
-  file that does not exist does, and nothing is read. The list is the same on both hosts.
+  file that does not exist does, and nothing is read. The list governs `tooling.aggrega.ai/tandemsdd/*` and, whenever
+  the files Worker answers `tooling.cognitio.it`, that host. It is kept in step with the serving Worker's customers,
+  so that moving the reads back to the files Worker serves the same consumers: `cognitio-tooling import-consumers
+  consumers.htpasswd --check` prints the logins whose hash differs and exits 1 when any does.
 
   ```json
   [
@@ -176,7 +208,7 @@ Every credential is a Worker secret, never in the repository or in OpenTofu stat
   ```
 
   `passwordSha256` is the SHA-256 of the password, in hex, so the secret holds no password. Usernames are unique and
-  carry no `:`. A consumer whose `publications` is `["*"]` is allowed every publication on both hosts, including one
+  carry no `:`. A consumer whose `publications` is `["*"]` is allowed every publication on any host the files Worker answers, including one
   added later, so adding a publication changes nothing for it.
 
   `files/consumers.mjs` keeps the list in `consumers.htpasswd`, beside this README, one consumer per line
@@ -193,7 +225,8 @@ Every credential is a Worker secret, never in the repository or in OpenTofu stat
   ```
 
   Every change is checked by the Worker's own parser, and against the publications `files/wrangler.jsonc`
-  configures, whichever host serves them, before the file is written; `--help` states the rest.
+  configures, whichever host serves them, before the file is written; `--help` states the rest. A change here does not
+  reach `tooling.cognitio.it` at the default route: make it with the `cognitio-tooling` commands above as well.
 - **The read-only pair among the files Worker's consumers**: the registry's read-only pair is an ordinary consumer in
   `consumers.htpasswd`, allowed `tandemsdd` and nothing else, added with `node consumers.mjs add <read-only user>
   tandemsdd` and the registry's read-only password typed at the prompt. The files Worker holds no `READONLY_*`
@@ -201,7 +234,7 @@ Every credential is a Worker secret, never in the repository or in OpenTofu stat
   below reads the plugin marketplace with that pair, so its entry stays in the file.
 
 The registry's two usernames must differ: the registry looks a credential up by username and takes the first match,
-which is the push pair. A new password for the read-only pair goes to three places, or the pair answers 401 on one
+which is the push pair. A new password for the read-only pair goes to each of these places, or the pair answers 401 on one
 host and 200 on the other:
 
 - the registry: `wrangler secret put READONLY_PASSWORD` on the registry Worker;
@@ -211,7 +244,7 @@ host and 200 on the other:
   secret, which the registry would not know), so the customer is imported again:
   `cognitio-tooling customer remove <read-only user>`, `cognitio-tooling import-consumers consumers.htpasswd`
   (it creates only the missing login), then `cognitio-tooling credential expires <read-only user> imported never`.
-  Run the three back to back: between the removal and the import the pair answers 401 on the serving Worker's host.
+  Run these back to back: between the removal and the import the pair answers 401 on the serving Worker's host.
 
 Neither registry password may contain `,` or `|`, which the devcontainer CLI's credential variable cannot carry.
 
@@ -221,7 +254,7 @@ checks a credential against the registry, which knows only its own pairs, so a c
 registry's read-only pair. A consumer's own credential serves every other publication, read by whatever client that
 package's consumers use.
 
-The release workflow in `aggrega-ai/tandemsdd` reads four repository Actions secrets:
+The release workflow in `aggrega-ai/tandemsdd` reads these repository Actions secrets:
 
 | Secret | Value |
 |---|---|

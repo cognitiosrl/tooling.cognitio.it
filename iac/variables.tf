@@ -1,15 +1,15 @@
-# Inputs for the tooling hosts' Cloudflare infrastructure. Every value is supplied
-# by scripts/tofu.sh from the environment. The API token is read from the
+# Inputs for the tooling hosts' Cloudflare infrastructure. A variable without a default is
+# supplied by scripts/tofu.sh from the environment. The API token is read from the
 # CLOUDFLARE_API_TOKEN environment variable, and the registry credentials are
 # Worker secrets, never OpenTofu inputs, so they never reach the state.
 
 variable "account_id" {
-  description = "Cloudflare account ID that owns both Workers: the same account as the hub, and the account holding every zone in var.zone_ids."
+  description = "Cloudflare account ID that owns the Workers: the same account as the hub, and the account holding every zone in var.zone_ids."
   type        = string
 }
 
 variable "zone_ids" {
-  description = "Cloudflare zone ID of the zone holding each host, keyed by hostname: one entry for var.registry_hostname and for every host in var.publications."
+  description = "Cloudflare zone ID of the zone holding each host, keyed by hostname: one entry for var.registry_hostname and for every host in var.publications, var.any_publication_hosts and var.admin_hostname."
   type        = map(string)
 }
 
@@ -62,7 +62,7 @@ variable "any_publication_worker_name" {
 }
 
 variable "instance_worker_names" {
-  description = "Names of the cognitio-tooling instance's two Workers; must equal \"name\" in ../workers/serve.wrangler.jsonc and ../workers/admin.wrangler.jsonc."
+  description = "Names of the cognitio-tooling instance's serving and admin Workers; must equal \"name\" in ../workers/serve.wrangler.jsonc and ../workers/admin.wrangler.jsonc."
   type = object({
     serve = string
     admin = string

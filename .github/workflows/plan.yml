@@ -32,7 +32,7 @@ jobs:
           submodules: false
           persist-credentials: false
 
-      # The pin-reading steps (this one, the two checkouts and the pin check) are written out in
+      # The pin-reading steps (this one and the two checkouts) are written out in
       # both deploy.yml and plan.yml on purpose: a workflow cannot share steps without a further
       # file. test/workflows.test.mjs holds the two copies textually identical, so a pull request's
       # plan checks the repositories and commits the deploy ships.

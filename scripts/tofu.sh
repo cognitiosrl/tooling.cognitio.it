@@ -351,9 +351,10 @@ deletes="$(jq -r '.resource_changes[]?
   | select(.change.actions | (index("delete") or index("forget")))
   | .address' "$WORK/plan.json")"
 # The deploy ships the outputs, the keys among them as the Workers' secrets (the serve
-# deploy ships the verifier key, the admin deploy both keys). Adding an output changes nothing deployed; changing or removing one is gated as a resource change,
-# and for a sensitive output as a delete, since it replaces the keys every credential is
-# verified with.
+# deploy ships the verifier key, the admin deploy both keys). Adding an output changes
+# nothing deployed; changing or removing one is gated as a resource change, and for a
+# sensitive output as a delete, since it replaces the keys every credential is verified
+# with.
 added_outputs="$(jq -r '[.output_changes // {} | to_entries[] | select(.value.actions == ["create"]) | .key]
   | join(", ")' "$WORK/plan.json")"
 changed_outputs="$(jq -r '.output_changes // {} | to_entries[]

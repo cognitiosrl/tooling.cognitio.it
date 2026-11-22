@@ -52,7 +52,7 @@ jobs:
           submodules: false
           persist-credentials: false
 
-      # The pin-reading steps (this one, the two checkouts and the pin check) are written out in
+      # The pin-reading steps (this one and the two checkouts) are written out in
       # both deploy.yml and plan.yml on purpose: a workflow cannot share steps without a further
       # file. test/workflows.test.mjs holds the two copies textually identical, so a pull request's
       # plan checks the repositories and commits the deploy ships.
@@ -287,7 +287,7 @@ jobs:
           # This check holds the latest version and the serving one the same, so which of them
           # that is cannot matter; the test "the two copies of the secrets-inheritance check are
           # textually identical" keeps the two copies equal. A Worker's first deploy is made by
-          # hand: with no deployment, wrangler stops before this check answers.
+          # hand: with no deployment, the check answers "no usable deployment" and the step fails.
           worker=$(sed -n 's/^ *"name": *"\([^"]*\)".*/\1/p' "$config")
           deployed=$(wr deployments status --json --config "$config" | jq -er 'if (.versions | length > 0) and all(.versions[]; (.version_id | type) == "string" and (.percentage | type) == "number") then [.versions[] | "\(.version_id) (\(.percentage) %)"] | join(", ") else empty end') || { echo "$worker: refusing to deploy: wrangler gave no usable deployment (versions with a version_id and a percentage)." >&2; exit 1; }
           latest=$(wr versions list --json --config "$config" | jq -er 'if length > 0 and all(.[]; (.id | type) == "string" and (.metadata.created_on | type) == "string") then sort_by(.metadata.created_on) | last | .id else empty end') || { echo "$worker: refusing to deploy: wrangler gave no usable version list (versions with an id and a creation time)." >&2; exit 1; }
@@ -312,7 +312,7 @@ jobs:
           # This check holds the latest version and the serving one the same, so which of them
           # that is cannot matter; the test "the two copies of the secrets-inheritance check are
           # textually identical" keeps the two copies equal. A Worker's first deploy is made by
-          # hand: with no deployment, wrangler stops before this check answers.
+          # hand: with no deployment, the check answers "no usable deployment" and the step fails.
           worker=$(sed -n 's/^ *"name": *"\([^"]*\)".*/\1/p' "$config")
           deployed=$(wr deployments status --json --config "$config" | jq -er 'if (.versions | length > 0) and all(.versions[]; (.version_id | type) == "string" and (.percentage | type) == "number") then [.versions[] | "\(.version_id) (\(.percentage) %)"] | join(", ") else empty end') || { echo "$worker: refusing to deploy: wrangler gave no usable deployment (versions with a version_id and a percentage)." >&2; exit 1; }
           latest=$(wr versions list --json --config "$config" | jq -er 'if length > 0 and all(.[]; (.id | type) == "string" and (.metadata.created_on | type) == "string") then sort_by(.metadata.created_on) | last | .id else empty end') || { echo "$worker: refusing to deploy: wrangler gave no usable version list (versions with an id and a creation time)." >&2; exit 1; }

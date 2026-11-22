@@ -1,5 +1,6 @@
-// JSONC reading for the Wrangler configurations: the one home of the comment stripper that
-// the tests and the deploy scripts share.
+// JSONC reading for the Wrangler configurations: the comment stripper that the tests and the
+// deploy scripts under scripts/ share. files/wrangler-config.mjs carries its own, deliberately:
+// the files Worker's tools run from files/ alone and import nothing from outside it.
 
 /**
  * The JSON of a JSONC text: comments and trailing commas go, string contents stay.

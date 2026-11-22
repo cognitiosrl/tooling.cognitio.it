@@ -1,6 +1,7 @@
 # The resources the Workers bind or read: the D1 database, the R2 bucket and the two
-# keys the serving Worker verifies and signs with. None of the four is ever destroyed by a
-# run: each carries prevent_destroy, so a plan that would destroy or replace one fails.
+# generated keys (the serving and admin Workers verify with VERIFIER_KEY; the admin Worker
+# signs with CSRF_KEY). None of them is ever destroyed by a run: each carries prevent_destroy,
+# so a plan that would destroy or replace one fails.
 
 resource "cloudflare_d1_database" "tooling" {
   account_id            = var.account_id
@@ -17,7 +18,7 @@ resource "cloudflare_d1_database" "tooling" {
   }
 }
 
-# The bucket all four Workers bind. It already exists in the account; the import
+# The bucket every Worker binds. It already exists in the account; the import
 # block adopts it into the state instead of creating it.
 resource "cloudflare_r2_bucket" "tooling" {
   account_id = var.account_id

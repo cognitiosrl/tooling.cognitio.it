@@ -7,6 +7,9 @@ import { readFileSync } from "node:fs";
  * The JSON text of a JSONC document: `//` and `/* *\/` comments outside strings are
  * removed. A trailing comma is not, so a configuration carrying one fails to parse. Pure.
  *
+ * A deliberate near-duplicate of scripts/jsonc.mjs: the tools of files/ run from files/ alone and
+ * import nothing from outside it.
+ *
  * @param {string} text
  */
 export function stripJsonc(text) {

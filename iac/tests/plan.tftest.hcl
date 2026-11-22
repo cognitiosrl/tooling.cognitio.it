@@ -30,7 +30,7 @@ run "admin_record_and_route_absent_while_admin_route_enabled_is_false" {
   }
 }
 
-run "admin_record_and_route_depend_on_the_access_application_when_enabled" {
+run "the_admin_record_and_route_exist_with_the_admin_worker_and_host_when_enabled" {
   command = plan
   plan_options {
     target = [cloudflare_workers_route.admin, cloudflare_dns_record.admin, cloudflare_workers_route.any_publication]

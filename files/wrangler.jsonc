@@ -36,7 +36,9 @@
     // The hosts routed whole, as `any_publication_hosts` in ../iac/variables.tf lists
     // them; the tests compare the two. On such a host every publication name is a
     // publication at `_files/<publication>/`, so a new site module is served once its
-    // release uploads it, with no change here and no deploy.
+    // release uploads it, with no change here and no deploy. Only while the files Worker
+    // answers the host: at the default route the serving Worker does, from its own D1
+    // customers and grants, and this entry and CONSUMERS are the rollback configuration.
     "ANY_PUBLICATION_HOSTS": {
       "tooling.cognitio.it": { "immutable": ["archives/"] }
     }

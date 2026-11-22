@@ -1,5 +1,5 @@
 # Client-side encryption of the state and of a saved plan. The state names who may pass the
-# admin host's Access gate and holds the serving Worker's keys, so both are encrypted with
+# admin host's Access gate and holds the generated keys the Workers verify and sign with, so both are encrypted with
 # AES-GCM under a key derived from var.state_passphrase. Both are enforced: OpenTofu's
 # encryption refuses to read or write either one unencrypted, so a plain state put in the
 # bucket is refused, never read. Without the passphrase the state cannot be read: keep it

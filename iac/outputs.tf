@@ -15,7 +15,7 @@ output "verifier_key" {
 }
 
 output "csrf_key" {
-  description = "The serving Worker's CSRF_KEY, base64."
+  description = "The admin Worker's CSRF_KEY, base64."
   value       = random_bytes.csrf_key.base64
   sensitive   = true
 }
