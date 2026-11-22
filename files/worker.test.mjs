@@ -27,12 +27,14 @@ const hex = (text) => createHash("sha256").update(text, "utf8").digest("hex");
 // The deployed configuration's publications, so the tests read what wrangler deploys.
 const WRANGLER = readWranglerConfig(new URL("./wrangler.jsonc", import.meta.url));
 const PUBLICATIONS = WRANGLER.vars.PUBLICATIONS;
-const ANY_PUBLICATION_HOSTS = WRANGLER.vars.ANY_PUBLICATION_HOSTS;
-const SERVING = servingFrom(WRANGLER.vars);
 
-// A host routed one publication at a time, and the deployed host that serves any.
+// A host routed one publication at a time, and a test host of its own that the Worker
+// serves whole: the deployed configuration serves no host whole, so the any-publication
+// mode is exercised through the test's own env.
 const ROUTED_HOST = "tooling.example";
-const ANY_HOST = Object.keys(ANY_PUBLICATION_HOSTS)[0];
+const ANY_HOST = "any.example";
+const ANY_PUBLICATION_HOSTS = { [ANY_HOST]: { immutable: ["archives/"] } };
+const SERVING = servingFrom({ ...WRANGLER.vars, ANY_PUBLICATION_HOSTS });
 
 // Three consumers, as the README's example: two allowed both publications, and a
 // customer allowed l10n alone. Passwords carry a colon and the base64 "+" and "/".
@@ -104,7 +106,15 @@ const STORE = {
 
 // --- the configuration ---------------------------------------------------------
 
-test("the deployed configuration parses, tandemsdd on its own key prefix and every module at _files/<module>/", () => {
+test("the deployed configuration serves no host whole and parses, tandemsdd on its own key prefix", () => {
+  assert.equal("ANY_PUBLICATION_HOSTS" in WRANGLER.vars, false);
+  const deployed = servingFrom(WRANGLER.vars);
+  assert.equal(deployed.error, undefined, deployed.error);
+  assert.equal(deployed.hosts.size, 0);
+  assert.equal(deployed.publications.get("tandemsdd").keyPrefix, "_marketplace/");
+});
+
+test("a host served whole, given in the test's env, serves every module at _files/<module>/", () => {
   assert.equal(SERVING.error, undefined, SERVING.error);
   assert.equal(SERVING.publications.get("tandemsdd").keyPrefix, "_marketplace/");
   assert.equal(publicationFor(SERVING, ANY_HOST, "l10n").keyPrefix, "_files/l10n/");
@@ -135,17 +145,15 @@ test("the publications in wrangler.jsonc and the routes in ../iac/, on every hos
   }
 });
 
-// The `any_publication_hosts` default in ../iac/variables.tf, in the order written.
-function anyPublicationHosts() {
+// The `publications` variable's default names the same publications as PUBLICATIONS,
+// and the files Worker serves no host whole: no host of ../iac/'s `serving_hosts` is
+// routed one publication at a time.
+test("no host of serving_hosts in ../iac/ is routed one publication at a time", () => {
   const tf = readFileSync(new URL("../iac/variables.tf", import.meta.url), "utf8");
-  const block = /variable "any_publication_hosts" \{[\s\S]*?default\s*=\s*\[([^\]]*)\]/.exec(tf);
-  assert.ok(block, "variables.tf declares an any_publication_hosts default");
-  return [...block[1].matchAll(/"([^"]+)"/g)].map((m) => m[1]);
-}
-
-test("the hosts serving any publication are the same in wrangler.jsonc and ../iac/, and route nothing one by one", () => {
-  const hosts = anyPublicationHosts();
-  assert.deepEqual([...hosts].sort(), Object.keys(ANY_PUBLICATION_HOSTS).sort());
+  const block = /variable "serving_hosts" \{[\s\S]*?default\s*=\s*\[([^\]]*)\]/.exec(tf);
+  assert.ok(block, "variables.tf declares a serving_hosts default");
+  const hosts = [...block[1].matchAll(/"([^"]+)"/g)].map((m) => m[1]);
+  assert.ok(hosts.length > 0);
   const routed = new Set(routedPublications().map(([host]) => host));
   for (const host of hosts) assert.ok(!routed.has(host), `${host} is not also routed one publication at a time`);
 });
@@ -361,7 +369,7 @@ test('a consumer allowed "*" is served every publication routed on every host', 
   const consumers = JSON.stringify([{ name: "all", username: "all-user", passwordSha256: hex("pw"), publications: ["*"] }]);
   const cells = [
     ...routedPublications().flatMap(([, pubs]) => pubs.map((name) => [name, ROUTED_HOST])),
-    ...anyPublicationHosts().map((host) => ["some-module", host]),
+    ["some-module", ANY_HOST],
   ];
   for (const [name, host] of cells) {
     const store = { [objectKey(publicationFor(SERVING, host, name), "index.json")]: "{}" };
@@ -556,18 +564,15 @@ function publish(...args) {
 
 test("publish.mjs --dry-run prints the upload to the key the Worker reads", () => {
   const file = fileURLToPath(new URL("./package.json", import.meta.url));
-  const l10n = publish("l10n", "archives/cognitio-l10n-0.3.0.tgz", file, "--dry-run");
-  assert.equal(l10n.status, 0, l10n.stderr);
+  const marketplace = publish("tandemsdd", "archives/tandem-1.2.0.zip", file, "--dry-run");
+  assert.equal(marketplace.status, 0, marketplace.stderr);
   assert.equal(
-    l10n.stdout.trim(),
-    `wrangler r2 object put tandem-tooling/_files/l10n/archives/cognitio-l10n-0.3.0.tgz --file ${file} --content-type application/gzip --remote`,
+    marketplace.stdout.trim(),
+    `wrangler r2 object put tandem-tooling/_marketplace/archives/tandem-1.2.0.zip --file ${file} --content-type application/zip --remote`,
   );
-  const legacy = publish("tandemsdd", "marketplace.json", file, "--dry-run");
-  assert.equal(legacy.status, 0, legacy.stderr);
-  assert.match(legacy.stdout, /tandem-tooling\/_marketplace\/marketplace\.json /);
-  const fresh = publish("brand-new", "index.json", file, "--dry-run");
-  assert.equal(fresh.status, 0, fresh.stderr);
-  assert.match(fresh.stdout, /tandem-tooling\/_files\/brand-new\/index\.json /, "a module no configuration names");
+  const unconfigured = publish("l10n", "index.json", file, "--dry-run");
+  assert.equal(unconfigured.status, 2);
+  assert.equal(unconfigured.stderr.trim(), 'publish.mjs: "l10n" is not a publication in wrangler.jsonc');
 });
 
 test("publish.mjs refuses what is not a publication name, an unservable path, a missing file", () => {
@@ -575,9 +580,9 @@ test("publish.mjs refuses what is not a publication name, an unservable path, a 
   for (const args of [
     ["Nowhere", "a.json", file, "--dry-run"],
     ["v2", "a.json", file, "--dry-run"],
-    ["l10n", "../tandemsdd/marketplace.json", file, "--dry-run"],
-    ["l10n", "a.json", "/nonexistent/file", "--dry-run"],
-    ["l10n", "a.json"],
+    ["tandemsdd", "../tandemsdd/marketplace.json", file, "--dry-run"],
+    ["tandemsdd", "a.json", "/nonexistent/file", "--dry-run"],
+    ["tandemsdd", "a.json"],
   ]) {
     const run = publish(...args);
     assert.equal(run.status, 2, args.join(" "));
@@ -586,7 +591,7 @@ test("publish.mjs refuses what is not a publication name, an unservable path, a 
 
 test("publish.mjs without --dry-run refuses to run without the Cloudflare credential", () => {
   const file = fileURLToPath(new URL("./package.json", import.meta.url));
-  const run = publish("l10n", "a.json", file);
+  const run = publish("tandemsdd", "a.json", file);
   assert.equal(run.status, 2);
   assert.match(run.stderr, /CLOUDFLARE_API_TOKEN is not set/);
 });

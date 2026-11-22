@@ -22,9 +22,10 @@
 //   json                                         the CONSUMERS value the file stands for
 //   push                                         puts that value as the Worker's CONSUMERS
 //
-// <publications> is a comma-separated list of publications wrangler.jsonc configures,
-// or of any publication names when it lists a host that serves any publication, or "*"
-// for every publication, including one added later. --generate makes a random
+// <publications> is a comma-separated list of publication names, or "*" for every
+// publication, including one added later. A name is lowercase letters, digits and "-",
+// and never "v2". The files Worker serves the publications its wrangler.jsonc
+// configures and ignores any other name in an entry. --generate makes a random
 // password and prints it once; without it the password is read twice from the
 // terminal, or once from standard input when that is not a terminal.
 //
@@ -40,8 +41,7 @@ import { createHash, randomBytes } from "node:crypto";
 import { spawnSync } from "node:child_process";
 import { createInterface } from "node:readline";
 import { fileURLToPath } from "node:url";
-import { consumersFrom, servingFrom, publicationName } from "./worker.js";
-import { readWranglerConfig } from "./wrangler-config.mjs";
+import { consumersFrom, publicationName } from "./worker.js";
 
 const ALL = "*";
 const USERNAME = /^[A-Za-z0-9._-]+$/;
@@ -97,32 +97,23 @@ export function consumersJson(entries) {
 }
 
 /**
- * Refuses entries the Worker would refuse, a publication wrangler.jsonc does not
- * configure, or a file with no consumer at all. With `anyName`, which holds when a host
- * serves any publication, every publication name is configured.
+ * Refuses entries the Worker would refuse: a publication that is not a well-formed
+ * name, or a file with no consumer at all. A well-formed name the files Worker does not
+ * configure is kept; the Worker ignores it.
  *
  * @param {ReturnType<typeof parseFile>} entries
- * @param {Set<string>} known  the configured publications.
- * @param {{anyName?: boolean}} [options]
  */
-export async function validate(entries, known, { anyName = false } = {}) {
+export async function validate(entries) {
   const consumers = entries.filter((e) => !("raw" in e));
   if (consumers.length === 0) throw new UsageError("the file holds no consumer");
   for (const c of consumers) {
     for (const p of c.publications) {
-      if (p === ALL || known.has(p) || (anyName && publicationName(p))) continue;
-      throw new UsageError(`${c.username}: "${p}" is not a publication wrangler.jsonc configures (${[...known].join(", ")})`);
+      if (p === ALL || publicationName(p)) continue;
+      throw new UsageError(`${c.username}: "${p}" is not a publication name: lowercase letters, digits and "-", never "v2"`);
     }
   }
   const parsed = await consumersFrom({ CONSUMERS: consumersJson(entries) });
   if (parsed.error) throw new UsageError(parsed.error);
-}
-
-/** The arguments `validate` takes after the entries, from wrangler.jsonc. */
-function knownPublications() {
-  const parsed = servingFrom(readWranglerConfig(WRANGLER).vars ?? {});
-  if (parsed.error) throw new UsageError(`wrangler.jsonc: ${parsed.error}`);
-  return [new Set(parsed.publications.keys()), { anyName: parsed.hosts.size > 0 }];
 }
 
 function readEntries(file, { mustExist }) {
@@ -198,7 +189,7 @@ export async function main(argv) {
       if (entries.some((e) => e.username === username)) throw new UsageError(`"${username}" already exists; use passwd or allow`);
       // A placeholder hash, so the entry is validated before a password is asked for.
       const entry = { username, hash: "0".repeat(64), publications: splitPublications(pubs) };
-      await validate([...entries, entry], ...knownPublications());
+      await validate([...entries, entry]);
       entry.hash = hashPassword(await newPassword(generate));
       writeEntries(file, [...entries, entry]);
       console.log(`added ${username}: ${entry.publications.join(",")}. Run "push" to make it live.`);
@@ -219,7 +210,7 @@ export async function main(argv) {
       if (!username || !pubs || rest.length !== 2) throw new UsageError("usage: allow <username> <publications>");
       const entries = readEntries(file, { mustExist: true });
       find(entries, username).publications = splitPublications(pubs);
-      await validate(entries, ...knownPublications());
+      await validate(entries);
       writeEntries(file, entries);
       console.log(`${username} is allowed ${pubs}. Run "push" to make it live.`);
       return 0;
@@ -230,7 +221,7 @@ export async function main(argv) {
       const entries = readEntries(file, { mustExist: true });
       find(entries, username);
       const kept = entries.filter((e) => e.username !== username);
-      await validate(kept, ...knownPublications());
+      await validate(kept);
       writeEntries(file, kept);
       console.log(`removed ${username}. Run "push" to make it live.`);
       return 0;
@@ -244,7 +235,7 @@ export async function main(argv) {
     case "json":
     case "push": {
       const entries = readEntries(file, { mustExist: true });
-      await validate(entries, ...knownPublications());
+      await validate(entries);
       const json = consumersJson(entries);
       if (command === "json") {
         console.log(json);

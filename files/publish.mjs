@@ -3,12 +3,12 @@
 // publish.mjs <publication> <path> <file> [--dry-run]
 //
 // Uploads <file> to the R2 key the files Worker serves as
-// https://<host>/<publication>/<path>, on the host that routes the publication or on a
-// host that serves any publication (see ../iac/variables.tf). The publication, its key
-// prefix and the bucket come from ./wrangler.jsonc, and the key and content type from
-// the Worker's own functions, so what is written is what the Worker reads. A name
-// PUBLICATIONS does not configure is accepted when a host serves any publication, and is
-// written at its default key prefix.
+// https://<host>/<publication>/<path>, on the host that routes the publication. The
+// publication, its key prefix and the bucket come from ./wrangler.jsonc, and the key and
+// content type from the Worker's own functions, so what is written is what the Worker
+// reads. A name PUBLICATIONS does not configure is refused, unless the configuration
+// names a host served whole (ANY_PUBLICATION_HOSTS), where it is written at its default
+// key prefix.
 //
 // It runs the wrangler on PATH as
 //   wrangler r2 object put <bucket>/<key> --file <file> --content-type <type> --remote

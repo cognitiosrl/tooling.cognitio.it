@@ -9,11 +9,9 @@ import { join } from "node:path";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import worker from "./worker.js";
-import { readWranglerConfig } from "./wrangler-config.mjs";
 import { parseFile, formatFile, splitPublications, consumersJson, hashPassword, validate, UsageError } from "./consumers.mjs";
 
 const SCRIPT = fileURLToPath(new URL("./consumers.mjs", import.meta.url));
-const KNOWN = new Set(["tandemsdd", "l10n"]);
 const H = hashPassword("pw");
 
 function run(file, args, input = "") {
@@ -44,28 +42,26 @@ test('splitPublications: a list, or "*" alone', () => {
   assert.throws(() => splitPublications("l10n,l10n"), UsageError);
 });
 
-test("validate: a publication wrangler.jsonc does not configure, and an empty file, are refused", async () => {
-  await assert.rejects(validate(parseFile(`a:${H}:l1On\n`), KNOWN), /not a publication wrangler.jsonc configures/);
-  await assert.rejects(validate(parseFile("# nobody\n"), KNOWN), /no consumer/);
-  await validate(parseFile(`a:${H}:*\nb:${H}:l10n\n`), KNOWN);
+test("validate: a publication name that is not well formed, and an empty file, are refused", async () => {
+  await assert.rejects(validate(parseFile(`a:${H}:l1On\n`)), /"l1On" is not a publication name/);
+  await assert.rejects(validate(parseFile(`a:${H}:v2\n`)), /"v2" is not a publication name/);
+  await assert.rejects(validate(parseFile("# nobody\n")), /no consumer/);
+  await validate(parseFile(`a:${H}:*\nb:${H}:l10n\n`));
 });
 
-test("validate: with a host serving any publication, any publication name is configured, and only those", async () => {
-  await validate(parseFile(`a:${H}:tandemsdd,not-yet-released\n`), KNOWN, { anyName: true });
-  await assert.rejects(validate(parseFile(`a:${H}:l1On\n`), new Set(["tandemsdd"]), { anyName: true }), /not a publication/);
-  await assert.rejects(validate(parseFile(`a:${H}:v2\n`), new Set(["tandemsdd"]), { anyName: true }), /not a publication/);
+test("validate: any well-formed publication name is kept, one the files Worker does not configure included", async () => {
+  await validate(parseFile(`a:${H}:tandemsdd,not-yet-released\n`));
 });
 
 test("the JSON the file stands for is served by the Worker as written", async () => {
   const json = consumersJson(parseFile(`all:${hashPassword("p1")}:*\nl10n-only:${hashPassword("p2")}:l10n\nreader:${hashPassword("p3")}:tandemsdd\n`));
-  const vars = readWranglerConfig(new URL("./wrangler.jsonc", import.meta.url)).vars;
+  const anyHost = "any.example";
   const env = {
     FILES: { get: async (key) => ({ body: key, httpEtag: '"e"' }) },
-    PUBLICATIONS: vars.PUBLICATIONS,
-    ANY_PUBLICATION_HOSTS: vars.ANY_PUBLICATION_HOSTS,
+    PUBLICATIONS: { tandemsdd: { keyPrefix: "_marketplace/" } },
+    ANY_PUBLICATION_HOSTS: { [anyHost]: { immutable: ["archives/"] } },
     CONSUMERS: json,
   };
-  const anyHost = Object.keys(vars.ANY_PUBLICATION_HOSTS)[0];
   const get = (host, path, user, pass) =>
     worker.fetch(new Request(`https://${host}${path}`, { headers: { Authorization: `Basic ${btoa(`${user}:${pass}`)}` } }), env);
   assert.equal((await get("tooling.example", "/tandemsdd/marketplace.json", "all", "p1")).status, 200);
