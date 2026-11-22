@@ -36,8 +36,8 @@ const ANY_HOST = "any.example";
 const ANY_PUBLICATION_HOSTS = { [ANY_HOST]: { immutable: ["archives/"] } };
 const SERVING = servingFrom({ ...WRANGLER.vars, ANY_PUBLICATION_HOSTS });
 
-// Three consumers, as the README's example: two allowed both publications, and a
-// customer allowed l10n alone. Passwords carry a colon and the base64 "+" and "/".
+// Consumers as the README's example: two allowed tandemsdd and l10n, and a customer
+// allowed l10n alone. Passwords carry a colon and the base64 "+" and "/".
 const COGNITIO = { name: "cognitio", username: "cognitio", password: "c0g:n+t/o" };
 const AGGREGA = { name: "aggrega", username: "aggrega", password: "aggr:ega" };
 const CUSTOMER = { name: "acme", username: "acme-ci", password: "acme-secret" };
@@ -88,9 +88,10 @@ function basic(user, pass) {
 const as = (c) => basic(c.username, c.password);
 const READONLY = basic(RO_USER, RO_PASS);
 
-// A request goes to the host that serves its publication in the deployment: tandemsdd's
-// routed host, and the host serving any publication for every other one, unless `host`
-// names another.
+// A request goes to tandemsdd's routed host, and to ANY_HOST for every other publication,
+// unless `host`
+// names another. The deployment serves no host whole: ANY_HOST belongs to the test, which
+// gives it to the Worker through its own env.
 function req(path, { method = "GET", auth = as(COGNITIO), host } = {}) {
   const headers = auth === null ? {} : { Authorization: auth };
   const to = host ?? (path.startsWith("/tandemsdd/") ? ROUTED_HOST : ANY_HOST);
@@ -577,15 +578,16 @@ test("publish.mjs --dry-run prints the upload to the key the Worker reads", () =
 
 test("publish.mjs refuses what is not a publication name, an unservable path, a missing file", () => {
   const file = fileURLToPath(new URL("./package.json", import.meta.url));
-  for (const args of [
-    ["Nowhere", "a.json", file, "--dry-run"],
-    ["v2", "a.json", file, "--dry-run"],
-    ["tandemsdd", "../tandemsdd/marketplace.json", file, "--dry-run"],
-    ["tandemsdd", "a.json", "/nonexistent/file", "--dry-run"],
-    ["tandemsdd", "a.json"],
+  for (const [args, says] of [
+    [["Nowhere", "a.json", file, "--dry-run"], '"Nowhere" is not a publication in wrangler.jsonc'],
+    [["v2", "a.json", file, "--dry-run"], '"v2" is not a publication in wrangler.jsonc'],
+    [["tandemsdd", "../tandemsdd/marketplace.json", file, "--dry-run"], '"../tandemsdd/marketplace.json" is not a path the Worker serves'],
+    [["tandemsdd", "a.json", "/nonexistent/file", "--dry-run"], "/nonexistent/file is not a file"],
+    [["tandemsdd", "a.json"], "usage: publish.mjs <publication> <path> <file> [--dry-run]"],
   ]) {
     const run = publish(...args);
     assert.equal(run.status, 2, args.join(" "));
+    assert.equal(run.stderr.trim(), `publish.mjs: ${says}`, args.join(" "));
   }
 });
 

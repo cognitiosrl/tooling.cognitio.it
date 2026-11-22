@@ -69,7 +69,8 @@ run "a_serving_route_names_no_other_worker" {
   }
 
   variables {
-    serving_hosts = ["tooling.cognitio.it", "tooling-admin.cognitio.it"]
+    zone_ids      = { "tooling.aggrega.ai" = "zone-aggrega", "tooling.cognitio.it" = "zone-cognitio", "tooling-admin.cognitio.it" = "zone-cognitio", "second.serving.example" = "zone-second" }
+    serving_hosts = ["tooling.cognitio.it", "second.serving.example"]
   }
 
   assert {

@@ -23,8 +23,8 @@
 //   push                                         puts that value as the Worker's CONSUMERS
 //
 // <publications> is a comma-separated list of publication names, or "*" for every
-// publication, including one added later. A name is lowercase letters, digits and "-",
-// and never "v2". The files Worker serves the publications its wrangler.jsonc
+// publication, including one added later. A name starts with a lowercase letter or digit
+// and continues with lowercase letters, digits and "-"; "v2" is not one. The files Worker serves the publications its wrangler.jsonc
 // configures and ignores any other name in an entry. --generate makes a random
 // password and prints it once; without it the password is read twice from the
 // terminal, or once from standard input when that is not a terminal.
@@ -97,9 +97,10 @@ export function consumersJson(entries) {
 }
 
 /**
- * Refuses entries the Worker would refuse: a publication that is not a well-formed
- * name, or a file with no consumer at all. A well-formed name the files Worker does not
- * configure is kept; the Worker ignores it.
+ * Refuses a publication that is not a well-formed name, and a file with no consumer at
+ * all. The name check is this tool's own: the Worker's consumer parser accepts any
+ * string. A well-formed name the files Worker does not configure is kept; the Worker
+ * ignores it.
  *
  * @param {ReturnType<typeof parseFile>} entries
  */
@@ -109,7 +110,7 @@ export async function validate(entries) {
   for (const c of consumers) {
     for (const p of c.publications) {
       if (p === ALL || publicationName(p)) continue;
-      throw new UsageError(`${c.username}: "${p}" is not a publication name: lowercase letters, digits and "-", never "v2"`);
+      throw new UsageError(`${c.username}: "${p}" is not a publication name: it starts with a lowercase letter or digit and continues with lowercase letters, digits and "-", and is never "v2"`);
     }
   }
   const parsed = await consumersFrom({ CONSUMERS: consumersJson(entries) });

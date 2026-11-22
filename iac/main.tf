@@ -2,8 +2,7 @@
 # binds the registry Worker to its host, a proxied DNS record for every other host,
 # one route per publication on each host that lists its publications, which sends
 # that path prefix of the host to the files Worker, and one route for the whole of
-# each host that serves any publication, which sends that host to the cognitio-tooling
-# serving Worker by default.
+# each serving host, which sends that host to the cognitio-tooling serving Worker.
 #
 # The admin host of the cognitio-tooling instance sits behind a Cloudflare Access
 # application; its DNS record and route exist only once admin_route_enabled is true, and
